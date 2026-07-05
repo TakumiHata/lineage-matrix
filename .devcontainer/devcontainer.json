@@ -1,0 +1,15 @@
+{
+  "name": "lineage-matrix",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "gh auth setup-git || true",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=gh-config,target=/home/vscode/.config/gh,type=volume"
+  ]
+}
