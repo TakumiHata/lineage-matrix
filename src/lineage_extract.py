@@ -13,6 +13,24 @@ def extract_select_columns(sql: str) -> list[str]:
     return [sel.alias_or_name for sel in parsed.selects]
 
 
+def extract_used_tables(expanded_ast: exp.Expression) -> list[str]:
+    """SELECT出力カラムのリネージだけでは、WHERE句やJOIN条件だけで参照され
+    SELECT結果には一切現れないテーブル（例: WHERE句のサブクエリでのフィルタ
+    条件にのみ使われるテーブル）が漏れてしまう。expand_query_ast() で
+    クエリ間参照を展開済みのASTに対して find_all(exp.Table) を行うことで、
+    SELECT/WHERE/JOIN/GROUP BY/HAVING/ORDER BYを問わず、そのクエリが実際に
+    触れている物理テーブルを漏れなく抽出する。
+
+    展開済みASTを渡す前提のため、ここで見つかる exp.Table はクエリ参照
+    （expand_query_ast が Subquery に置き換え済み）ではなく、すべて物理テーブル
+    ……のはずだが、WITH句のCTE名もFROM句では exp.Table として現れるため、
+    同じクエリ内で定義されたCTE名（exp.CTE.alias）は物理テーブルではないので除外する。
+    """
+    cte_names = {c.alias for c in expanded_ast.find_all(exp.CTE)}
+    tables = [t.name for t in expanded_ast.find_all(exp.Table) if t.name not in cte_names]
+    return list(dict.fromkeys(tables))  # 重複除去（順序維持）
+
+
 def restore_schema_casing(table_name: str | None, column_name: str | None, schema: dict) -> str | None:
     # tsqlは大文字小文字を区別しないため、schema付きlineage()解決後の
     # カラム名はASCII部分が小文字化されることがある（例: 工事ID → 工事id）。

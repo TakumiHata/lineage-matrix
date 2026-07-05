@@ -32,12 +32,27 @@ def build_lineage_dataframe(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(expanded_rows, columns=columns)
 
 
+def build_table_usage_dataframe(rows: list[dict]) -> pd.DataFrame:
+    """クエリごとに実際に参照している物理テーブルの一覧（開始クエリ, 参照テーブル）。
+
+    lineage.xlsx はSELECT出力カラムの由来だけを追うため、WHERE句やJOIN条件
+    だけで使われてSELECT結果には現れないテーブルが漏れる。このテーブルは
+    それを補い、そのクエリが触れている全テーブルを漏れなく記録する。
+    """
+    return pd.DataFrame(rows, columns=["開始クエリ", "参照テーブル"])
+
+
 def write_group_output(
-    out_dir: Path, df_lineage: pd.DataFrame, analysis_log: dict, error_log: list[dict]
+    out_dir: Path,
+    df_lineage: pd.DataFrame,
+    df_table_usage: pd.DataFrame,
+    analysis_log: dict,
+    error_log: list[dict],
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df_lineage.to_excel(out_dir / "lineage.xlsx", index=False)
+    df_table_usage.to_excel(out_dir / "table_usage.xlsx", index=False)
     with open(out_dir / "analysis.json", "w", encoding="utf-8") as f:
         json.dump(analysis_log, f, ensure_ascii=False, indent=2)
         f.write("\n")
