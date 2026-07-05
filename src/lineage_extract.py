@@ -73,20 +73,34 @@ def walk_leaves(node):
     """ルートから各リーフ（downstreamが空＝実テーブル参照）までの経路をたどり、
     (由来を持つノードの式, リーフの式, 通過したサブクエリエイリアスの経路) を列挙する。
     node.walk() は木全体を平坦に返すだけで経路情報を失うため使わない。
+
+    経路には2種類の要素が混在しうる：
+    - reference_node_name: SQL内に直接書かれたローカルな無名サブクエリの
+      エイリアス（例：サブクエリ1）
+    - source_name: sqlglot.lineage() の sources= 引数（exp.expand()の
+      `/* source: 名前 */` コメント）によって判明する、そのホップが実際に
+      属している登録済みクエリ名。同じ登録済みクエリの内部に留まっている
+      間は変化しないため、遷移したタイミングでのみ経路に追加する。
     """
     if not node.downstream:
         yield node.expression, node.expression, []
         return
 
-    def _walk(n, path: list[str]):
+    def _walk(n, path: list[str], current_source: str):
         for d in n.downstream:
-            if not d.downstream:
-                yield n.expression, d.expression, path
-            else:
-                new_path = path + ([d.reference_node_name] if d.reference_node_name else [])
-                yield from _walk(d, new_path)
+            new_path = path
+            if d.source_name and d.source_name != current_source:
+                new_path = new_path + [d.source_name]
+                current_source = d.source_name
+            if d.reference_node_name:
+                new_path = new_path + [d.reference_node_name]
 
-    yield from _walk(node, [])
+            if not d.downstream:
+                yield n.expression, d.expression, new_path
+            else:
+                yield from _walk(d, new_path, current_source)
+
+    yield from _walk(node, [], "")
 
 
 def extract_lineage_rows(
@@ -94,9 +108,13 @@ def extract_lineage_rows(
 ) -> list[dict]:
     rows = []
 
+    # sources= には自分自身を含めない。exp.expand() は循環検出を行わないため、
+    # 自己参照的な名前がSQL中にあった場合の無限再帰を避ける。
+    sources = {name: q_sql for name, q_sql in queries.items() if name != query_name}
+
     for output_col in extract_select_columns(sql):
         try:
-            node = sqlglot_lineage(column=output_col, sql=sql, schema=schema, dialect="tsql")
+            node = sqlglot_lineage(column=output_col, sql=sql, schema=schema, sources=sources, dialect="tsql")
         except Exception as e:
             error_log.append({
                 "クエリ": query_name,

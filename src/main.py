@@ -15,7 +15,7 @@ from config import DEPENDENCIES_FILENAME, OUTPUT_DIR, TABLES_FILENAME
 from lineage_extract import extract_lineage_rows, extract_select_columns
 from loader import discover_query_groups, load_queries, load_schema
 from report import build_lineage_dataframe, write_group_output
-from sql_expand import expand_query_ast
+from sql_expand import expand_query_ast, find_query_table_collisions
 
 
 def process_group(group_dir: Path) -> None:
@@ -26,23 +26,22 @@ def process_group(group_dir: Path) -> None:
     analysis_log: dict[str, dict] = {}
     error_log: list[dict] = []
 
-    expanded_queries: dict[str, str] = {}
+    # クエリ参照の展開（sqlglot標準の exp.expand()）は sqlglot_lineage() の
+    # sources= 引数が内部で行うため、ここでは analysis.json 用のログ取得と
+    # クエリ名／テーブル名の衝突警告のためだけに呼び出す。
     for name in queries:
         select_cols = extract_select_columns(queries[name])
 
-        try:
-            warnings: list[str] = []
-            ast_result = expand_query_ast(name, queries, schema, {name}, warnings)
-            error_log.extend({"クエリ": name, "種別": "クエリ名衝突警告", "メッセージ": w} for w in warnings)
+        collisions = find_query_table_collisions(queries[name], queries, schema)
+        error_log.extend({"クエリ": name, "種別": "クエリ名衝突警告", "メッセージ": w} for w in collisions)
 
-            expanded_sql = ast_result.sql(dialect="tsql")
+        try:
+            ast_result = expand_query_ast(name, queries)
             analysis_log[name] = {
                 "extract_select_columns": select_cols,
                 "expand_query_ast_repr": repr(ast_result).splitlines(),
-                "expand_sql": expanded_sql,
+                "expand_sql": ast_result.sql(dialect="tsql"),
             }
-
-            expanded_queries[name] = expanded_sql
         except Exception as e:
             error_log.append({"クエリ": name, "種別": "expand_sql失敗", "メッセージ": str(e)})
             analysis_log[name] = {
@@ -50,10 +49,9 @@ def process_group(group_dir: Path) -> None:
                 "expand_query_ast_repr": None,
                 "expand_sql": None,
             }
-            expanded_queries[name] = queries[name]
 
     all_rows = []
-    for query_name, sql in expanded_queries.items():
+    for query_name, sql in queries.items():
         all_rows.extend(extract_lineage_rows(query_name, sql, schema, queries, error_log))
 
     df_lineage = build_lineage_dataframe(all_rows)
