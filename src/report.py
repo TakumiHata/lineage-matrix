@@ -75,7 +75,13 @@ def write_group_output(
 
     df_lineage.to_excel(out_dir / "lineage.xlsx", index=False)
     df_table_usage.to_excel(out_dir / "table_usage.xlsx", index=False)
-    (out_dir / "query_graph.mmd").write_text(query_graph_mermaid, encoding="utf-8")
+
+    # GitHubは単体の.mmdファイルをレンダリングしない（プレーンテキストとして
+    # 表示されるだけ）が、.md内の ```mermaid コードフェンスはREADME等と同様に
+    # 図として自動描画される。そのため .md + コードフェンスの形で保存する。
+    query_graph_md = f"```mermaid\n{query_graph_mermaid}```\n"
+    (out_dir / "query_graph.md").write_text(query_graph_md, encoding="utf-8")
+
     with open(out_dir / "analysis.json", "w", encoding="utf-8") as f:
         json.dump(analysis_log, f, ensure_ascii=False, indent=2)
         f.write("\n")

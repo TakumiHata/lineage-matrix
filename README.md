@@ -128,9 +128,9 @@ input/
 
 クエリ参照（他クエリをFROM句で呼んでいる箇所）は展開済みのASTに対して`find_all(exp.Table)`するため、登録済みクエリ名ではなく物理テーブル名のみが残る。またWITH句のCTE名も`exp.Table`として現れるため、`exp.CTE`の別名と一致するものは物理テーブルではないとして除外している。
 
-### `query_graph.mmd`
+### `query_graph.md`
 
-そのフォルダ内のクエリが互いにどう参照し合っているか（クエリ間の依存関係）を[Mermaid](https://mermaid.js.org/)のflowchart記法で表したファイル。GitHubや多くのMarkdownビューアでそのまま図として描画できる。
+そのフォルダ内のクエリが互いにどう参照し合っているか（クエリ間の依存関係）を[Mermaid](https://mermaid.js.org/)のflowchart記法で表したファイル。単体の`.mmd`ファイルはGitHub上でレンダリングされない（プレーンテキストとして表示されるだけ）ため、` ```mermaid ` コードフェンスで囲んだ`.md`として出力している。これによりGitHubやVS Code、多くのMarkdownビューアでそのまま図として描画される。
 
 ```mermaid
 graph LR
@@ -222,7 +222,7 @@ src/
 │   └── <起点クエリ名>/
 │       ├── lineage.xlsx
 │       ├── table_usage.xlsx
-│       ├── query_graph.mmd
+│       ├── query_graph.md
 │       ├── analysis.json
 │       └── error.json
 └── requirements.txt

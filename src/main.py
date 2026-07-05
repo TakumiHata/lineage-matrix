@@ -7,7 +7,7 @@ input/ は起点クエリ（クエリ連鎖の一番外側のクエリ）ごと�
 table.json（そのグループで使う物理テーブルのスキーマ）が入っている。
 output/ 側も同じ起点クエリ単位のフォルダ構成で、フォルダごとに
 lineage.xlsx・テーブル使用状況（table_usage.xlsx）・クエリ依存関係図
-（query_graph.mmd）・解析ログ（analysis.json）・エラーログ（error.json）を出力する。
+（query_graph.md）・解析ログ（analysis.json）・エラーログ（error.json）を出力する。
 """
 
 from pathlib import Path
@@ -76,7 +76,7 @@ def process_group(group_dir: Path) -> None:
     write_group_output(out_dir, df_lineage, df_table_usage, query_graph_mermaid, analysis_log, error_log)
 
     print(f"[{group_name}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
-    print(f"  -> {out_dir}/lineage.xlsx, table_usage.xlsx, query_graph.mmd, analysis.json, error.json")
+    print(f"  -> {out_dir}/lineage.xlsx, table_usage.xlsx, query_graph.md, analysis.json, error.json")
 
 
 def main() -> None:
