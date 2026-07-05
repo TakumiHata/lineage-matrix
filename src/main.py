@@ -32,7 +32,7 @@ def process_group(group_dir: Path) -> None:
     # sources= 引数が内部で行うため、ここでは analysis.json 用のログ取得と
     # クエリ名／テーブル名の衝突警告、テーブル使用状況の抽出のためだけに呼び出す。
     for name in queries:
-        select_cols = extract_select_columns(queries[name])
+        select_cols = extract_select_columns(queries[name], schema)
 
         collisions = find_query_table_collisions(queries[name], queries, schema)
         error_log.extend({"クエリ": name, "種別": "クエリ名衝突警告", "メッセージ": w} for w in collisions)

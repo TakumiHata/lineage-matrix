@@ -3,14 +3,50 @@
 import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.lineage import lineage as sqlglot_lineage
+from sqlglot.optimizer.qualify import qualify
 
 
-def extract_select_columns(sql: str) -> list[str]:
+def _has_star(parsed: exp.Expression) -> bool:
+    return any(
+        isinstance(sel, exp.Star) or (isinstance(sel, exp.Column) and isinstance(sel.this, exp.Star))
+        for sel in parsed.selects
+    )
+
+
+def extract_select_columns(sql: str, schema: dict, dialect: str = "tsql") -> list[str]:
     # parsed.selects は最も外側の SELECT の出力カラムのみを返す。
     # find_all(exp.Column) + 親でのフィルタでは、サブクエリ内部の
     # SELECT句のカラムまで拾ってしまい重複の原因になるため使わない。
-    parsed = sqlglot.parse_one(sql, dialect="tsql")
-    return [sel.alias_or_name for sel in parsed.selects]
+    parsed = sqlglot.parse_one(sql, dialect=dialect)
+
+    if not _has_star(parsed):
+        # 通常はここで完結。qualify() を経由しないため大文字小文字がそのまま保たれる。
+        return [sel.alias_or_name for sel in parsed.selects]
+
+    # SELECT * を含む場合のみ、スキーマを使って実際のカラム名に展開する。
+    # qualify(expand_stars=True) はデフォルトで有効なので、schema付きで呼ぶだけで
+    # * を実カラム名のリストに展開できる（lineage()が内部でやっているのと同じ処理）。
+    # ただし qualify() は識別子を正規化する（例: 工事ID → 工事id）ため、
+    # テーブルのエイリアスを実テーブル名に戻したうえで restore_schema_casing() で
+    # 本来の大文字小文字に復元する。展開先が物理テーブルでない場合（他クエリの
+    # 参照に対する * 等）は expand_query_ast() での事前展開が必要になるため、
+    # ここでは schema 未登録の参照は諦めて "*" のまま返す。
+    try:
+        qualified = qualify(parsed, schema=schema, dialect=dialect, validate_qualify_columns=False, identify=False)
+    except Exception:
+        return [sel.alias_or_name for sel in parsed.selects]
+
+    alias_to_table = {t.alias_or_name: t.name for t in qualified.find_all(exp.Table)}
+
+    columns = []
+    for sel in qualified.selects:
+        col_expr = sel.this if isinstance(sel, exp.Alias) else sel
+        if isinstance(col_expr, exp.Column) and col_expr.table:
+            real_table = alias_to_table.get(col_expr.table, col_expr.table)
+            columns.append(restore_schema_casing(real_table, col_expr.name, schema) or col_expr.name)
+        else:
+            columns.append(sel.alias_or_name)
+    return columns
 
 
 def extract_used_tables(expanded_ast: exp.Expression) -> list[str]:
@@ -130,7 +166,7 @@ def extract_lineage_rows(
     # 自己参照的な名前がSQL中にあった場合の無限再帰を避ける。
     sources = {name: q_sql for name, q_sql in queries.items() if name != query_name}
 
-    for output_col in extract_select_columns(sql):
+    for output_col in extract_select_columns(sql, schema):
         try:
             node = sqlglot_lineage(column=output_col, sql=sql, schema=schema, sources=sources, dialect="tsql")
         except Exception as e:
