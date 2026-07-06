@@ -101,7 +101,7 @@ input/
 
 ## 出力：`output/<起点クエリ名>/`
 
-フォルダごとに以下の5ファイルを生成する。
+フォルダごとに以下の4ファイルを生成する。
 
 ### `lineage.xlsx`
 
@@ -127,26 +127,6 @@ input/
 | 参照テーブル | そのクエリのSQLで実際に参照されている物理テーブル名（SELECT/WHERE/JOIN/GROUP BY/HAVING/ORDER BYを問わない） |
 
 クエリ参照（他クエリをFROM句で呼んでいる箇所）は展開済みのASTに対して`find_all(exp.Table)`するため、登録済みクエリ名ではなく物理テーブル名のみが残る。またWITH句のCTE名も`exp.Table`として現れるため、`exp.CTE`の別名と一致するものは物理テーブルではないとして除外している。
-
-### `query_graph.md`
-
-そのフォルダ内のクエリが互いにどう参照し合っているか（クエリ間の依存関係）を[Mermaid](https://mermaid.js.org/)のflowchart記法で表したファイル。単体の`.mmd`ファイルはGitHub上でレンダリングされない（プレーンテキストとして表示されるだけ）ため、` ```mermaid ` コードフェンスで囲んだ`.md`として出力している。これによりGitHubやVS Code、多くのMarkdownビューアでそのまま図として描画される。
-
-```mermaid
-graph LR
-    q0["クエリ工事基本"]
-    q1["クエリ工事集計"]
-    q2["クエリ工事詳細"]
-    q3["クエリ入札集計"]
-    q4["クエリ工事委託分析"]
-    q1 --> q0
-    q2 --> q0
-    q4 --> q1
-    q4 --> q3
-    q4 --> q2
-```
-
-`lineage.xlsx`（カラム単位の由来）・`table_usage.xlsx`（テーブル単位の使用状況）とは異なる粒度で、「クエリが構造的にどう組み立てられているか」を示す。上の例では`クエリ工事集計`と`クエリ工事詳細`が両方とも`クエリ工事基本`を参照している（共有されている）ことが視覚的に分かる。sqlglot自体にはMermaid出力機能はないため、`find_query_references()`（`find_all(exp.Table)`で他クエリへの参照を集める、`find_query_table_collisions()`と同じ手法）で集めたエッジ情報を`build_query_graph_mermaid()`でテキストとして組み立てているだけの単純な処理。日本語のクエリ名をそのままMermaidのノードIDにすると記法上のトラブルの可能性があるため、`q0`, `q1`...という安全なIDを振り、表示名は`["表示名"]`のラベルとして持たせている。
 
 ### `analysis.json`
 
@@ -222,7 +202,6 @@ src/
 │   └── <起点クエリ名>/
 │       ├── lineage.xlsx
 │       ├── table_usage.xlsx
-│       ├── query_graph.md
 │       ├── analysis.json
 │       └── error.json
 └── requirements.txt

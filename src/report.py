@@ -42,32 +42,10 @@ def build_table_usage_dataframe(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["開始クエリ", "参照テーブル"])
 
 
-def build_query_graph_mermaid(query_names: list[str], edges: list[tuple[str, str]]) -> str:
-    """クエリ間の依存関係（どのクエリがどのクエリをFROM句で参照しているか）を
-    Mermaidのflowchart記法で表す。sqlglot自体にMermaid出力機能はないため、
-    収集済みのエッジ情報をテキストとして組み立てるだけの単純な整形処理。
-
-    日本語のクエリ名をそのままMermaidのノードIDにすると記法上のトラブルの
-    可能性があるため、q0, q1, ... という安全なIDを振り、表示名は
-    `["表示名"]` のラベルとして持たせる。依存先を持たない（孤立した）
-    クエリも見落とさないよう、全クエリを先にノードとして明示的に宣言する。
-    """
-    node_id = {name: f"q{i}" for i, name in enumerate(query_names)}
-
-    lines = ["graph LR"]
-    for name in query_names:
-        lines.append(f'    {node_id[name]}["{name}"]')
-    for src, dst in edges:
-        lines.append(f"    {node_id[src]} --> {node_id[dst]}")
-
-    return "\n".join(lines) + "\n"
-
-
 def write_group_output(
     out_dir: Path,
     df_lineage: pd.DataFrame,
     df_table_usage: pd.DataFrame,
-    query_graph_mermaid: str,
     analysis_log: dict,
     error_log: list[dict],
 ) -> None:
@@ -75,13 +53,6 @@ def write_group_output(
 
     df_lineage.to_excel(out_dir / "lineage.xlsx", index=False)
     df_table_usage.to_excel(out_dir / "table_usage.xlsx", index=False)
-
-    # GitHubは単体の.mmdファイルをレンダリングしない（プレーンテキストとして
-    # 表示されるだけ）が、.md内の ```mermaid コードフェンスはREADME等と同様に
-    # 図として自動描画される。そのため .md + コードフェンスの形で保存する。
-    query_graph_md = f"```mermaid\n{query_graph_mermaid}```\n"
-    (out_dir / "query_graph.md").write_text(query_graph_md, encoding="utf-8")
-
     with open(out_dir / "analysis.json", "w", encoding="utf-8") as f:
         json.dump(analysis_log, f, ensure_ascii=False, indent=2)
         f.write("\n")

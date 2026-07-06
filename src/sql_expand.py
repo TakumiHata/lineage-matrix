@@ -31,21 +31,6 @@ def expand_sql(query_name: str, queries: dict[str, str], dialect: str = "tsql") 
     return expand_query_ast(query_name, queries, dialect).sql(dialect=dialect)
 
 
-def find_query_references(sql: str, queries: dict[str, str], dialect: str = "tsql") -> list[str]:
-    """このSQLのFROM/JOIN句が参照している、他の登録済みクエリ名の一覧を返す
-    （クエリ間の依存関係グラフを組み立てるための情報収集。展開は行わない）。
-    """
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
-    refs = []
-    for table in parsed.find_all(exp.Table):
-        if table.db:
-            continue
-        matched_query = next((q for q in queries if q.lower() == table.name.lower()), None)
-        if matched_query is not None:
-            refs.append(matched_query)
-    return list(dict.fromkeys(refs))  # 重複除去（順序維持）
-
-
 def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict, dialect: str = "tsql") -> list[str]:
     """このSQLのFROM/JOIN句にある参照のうち、クエリ名とテーブル名の両方に
     一致するものを検出する。exp.expand() はクエリを優先して展開するため、
