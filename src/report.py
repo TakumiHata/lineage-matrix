@@ -46,6 +46,7 @@ def write_group_output(
     out_dir: Path,
     df_lineage: pd.DataFrame,
     df_table_usage: pd.DataFrame,
+    chain_queries: dict[str, str],
     analysis_log: dict,
     error_log: list[dict],
 ) -> None:
@@ -53,6 +54,14 @@ def write_group_output(
 
     df_lineage.to_excel(out_dir / "lineage.xlsx", index=False)
     df_table_usage.to_excel(out_dir / "table_usage.xlsx", index=False)
+
+    # チェーン検出で特定した全クエリ（Access SQLのまま、変換不要）。
+    # AI変換の入力として使うため、名前とSQLだけの配列で出力する。
+    chain_queries_list = [{"クエリ名": name, "SQL": sql} for name, sql in chain_queries.items()]
+    with open(out_dir / "chain_queries.json", "w", encoding="utf-8") as f:
+        json.dump(chain_queries_list, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
     with open(out_dir / "analysis.json", "w", encoding="utf-8") as f:
         json.dump(analysis_log, f, ensure_ascii=False, indent=2)
         f.write("\n")
