@@ -3,8 +3,10 @@
 - expand_query_ast(): sqlglot標準の exp.expand() でクエリ参照をサブクエリに
   インライン展開する（analysis.json 用のログ生成にのみ使用し、実際のリネージ
   解決は sqlglot.lineage() の sources= 引数が別途行う）。
-- detect_chain(): 起点クエリから参照されるクエリを再帰的に辿り、チェーンに
-  含まれる全クエリを特定する。
+
+チェーン検出（起点クエリから到達可能な全クエリを辿ること）はVBA側が
+担当し、input/<起点クエリ>/chain_queries.json として出力される。
+lineage-matrix では detect_chain() は不要。
 
 exp.expand() は展開したサブクエリに `/* source: <元の名前> */` という
 コメントを自動付与し、sqlglot.lineage() 側はこれを検出して
@@ -15,18 +17,6 @@ Node.source_name に反映する。これにより、末端の物理テーブル
 
 import sqlglot
 import sqlglot.expressions as exp
-
-
-def _referenced_table_names(sql: str, dialect: str = "tsql") -> list[str]:
-    """このSQLのFROM/JOIN句で参照されている名前（クエリ名またはテーブル名）の
-    一覧を返す。find_all(exp.Table) はテキスト一致ではなく、FROM/JOIN句の
-    テーブル参照として構文的に認識されたノードのみを返すため、文字列リテラルや
-    カラム参照（ドット修飾）は別のノード種別（exp.Literal / exp.Column）なので
-    誤ってマッチすることはない。スキーマ修飾（[dbo].[テーブル]等）がある参照は
-    クエリ参照ではないため除外する。
-    """
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
-    return [t.name for t in parsed.find_all(exp.Table) if not t.db]
 
 
 def expand_query_ast(query_name: str, queries: dict[str, str], dialect: str = "tsql") -> exp.Expression:
@@ -57,34 +47,13 @@ def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict,
     return warnings
 
 
-def detect_chain(
-    start_query: str, all_queries: dict[str, str], query_name_set: set[str], dialect: str = "tsql"
-) -> tuple[dict[str, str], dict[str, list[str]]]:
-    """起点クエリから到達可能な全クエリを返す ({クエリ名: SQL}, {クエリ名: 呼び出し元クエリ名のリスト})。
-
-    各クエリのSQLで参照されている名前を query_name_set と照合することで
-    「クエリ参照かテーブル参照か」を判別し、クエリ参照であれば再帰的に辿る。
-    visited（訪問済み）を管理するため、循環参照があっても無限ループにはならない。
-    呼び出し元は複数ありうる（同じクエリが複数のクエリから参照されうる）ため、
-    クエリ名ごとにリストで持つ（登場順、重複なし）。起点クエリの呼び出し元は空リスト。
+def _referenced_table_names(sql: str, dialect: str = "tsql") -> list[str]:
+    """このSQLのFROM/JOIN句で参照されている名前（クエリ名またはテーブル名）の
+    一覧を返す。find_all(exp.Table) はテキスト一致ではなく、FROM/JOIN句の
+    テーブル参照として構文的に認識されたノードのみを返すため、文字列リテラルや
+    カラム参照（ドット修飾）は別のノード種別（exp.Literal / exp.Column）なので
+    誤ってマッチすることはない。スキーマ修飾（[dbo].[テーブル]等）がある参照は
+    クエリ参照ではないため除外する。
     """
-    visited: dict[str, str] = {}
-    parents: dict[str, list[str]] = {}
-    stack = [start_query]
-
-    while stack:
-        name = stack.pop()
-        if name in visited or name not in all_queries:
-            continue
-        visited[name] = all_queries[name]
-
-        for ref_name in _referenced_table_names(all_queries[name], dialect):
-            matched = next((q for q in query_name_set if q.lower() == ref_name.lower()), None)
-            if matched is not None:
-                parents.setdefault(matched, [])
-                if name not in parents[matched]:
-                    parents[matched].append(name)
-                if matched not in visited:
-                    stack.append(matched)
-
-    return visited, parents
+    parsed = sqlglot.parse_one(sql, dialect=dialect)
+    return [t.name for t in parsed.find_all(exp.Table) if not t.db]

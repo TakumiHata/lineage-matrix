@@ -1,57 +1,42 @@
-"""VBAが出力する input/query_dependencies.json・input/table.json（全クエリ・
-全テーブルのフラットな一覧）を解析し、input/ 直下のサブフォルダ名で指定された
-起点クエリごとに、クエリの出力カラムがどのテーブル・カラムに由来するかを
-フラットテーブル形式で output/<起点クエリ>/lineage.xlsx に出力するスクリプト。
+"""VBA がチェーン検出して AI 変換済みSQLを配置した
+input/<起点クエリ>/converted_queries.json を解析し、起点クエリごとに
+出力カラムがどのテーブル・カラムに由来するかをフラットテーブル形式で
+output/<起点クエリ>/lineage.xlsx に出力するスクリプト。
 
-チェーン検出（起点クエリから芋づる式にクエリ依存関係を辿ること）は、
-以前はVBA側が担いフォルダ単位に切り分け済みのデータを出力していたが、
-現在は lineage-matrix 側（sqlglot AST）が担う。VBAはチェーン追跡を一切行わず、
-全クエリ・全テーブルをフラットに出力するだけでよい。
-
-output/ 側は起点クエリ単位のフォルダ構成で、フォルダごとに
-lineage.xlsx・テーブル使用状況（table_usage.xlsx）・チェーン検出結果
-（chain_queries.json）・解析ログ（analysis.json）・エラーログ（error.json）を
-出力する。
-
-チェーン検出で特定したクエリ（Access SQLのまま）は output/<起点クエリ>/
-chain_queries.json としても出力される。これをAI変換にかけた結果を
-input/<起点クエリ>/converted_queries.json として配置しておくと、次回実行時
-そちらのSQL（AI変換済み・SQL Server用）がリネージ解析に優先して使われる。
-存在しない場合はチェーン検出結果のSQLがそのまま使われる。
+処理の流れ：
+1. input/table.json を読み込む
+2. input/ 直下のサブフォルダを走査して起点クエリ（converted_queries.json が存在するフォルダ）を取得
+3. 各起点クエリについて：
+   - converted_queries.json を読み込む
+   - sql_expand → lineage_extract → report で解析実行
+4. output/<起点クエリ>/ に結果ファイルを出力
 """
 
 import sys
 
-from config import INPUT_DIR, OUTPUT_DIR, QUERY_DEPENDENCIES_FILE, START_QUERIES_FILE, TABLES_FILE, discover_start_queries
+from config import INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
 from lineage_extract import extract_lineage_rows, extract_select_columns, extract_used_tables
 from loader import load_queries, load_schema
 from report import build_lineage_dataframe, build_table_usage_dataframe, write_group_output
-from sql_expand import detect_chain, expand_query_ast, find_query_table_collisions
+from sql_expand import expand_query_ast, find_query_table_collisions
 
 
-def resolve_queries_for_analysis(start_query: str, chain_queries: dict[str, str]) -> tuple[dict[str, str], str]:
-    """リネージ解析（sql_expand → lineage_extract）に使うクエリ辞書を返す。
-
-    input/<起点クエリ>/converted_queries.json （AI変換済みのSQL Server用SQL）が
-    存在すればそちらを優先し、なければチェーン検出結果（chain_queries.json と
-    同じ内容、Access SQLのまま）をそのまま使う。戻り値の2つ目はどちらを使ったかの
-    表示用ラベル。
-    """
+def process_group(start_query: str, schema: dict) -> None:
+    """起点クエリに対してリネージ解析を実行し、output/<起点クエリ>/ に結果を出力する。"""
+    group_name = start_query
+    
+    # converted_queries.json（AI変換済みSQL）を優先して使用
     converted_path = INPUT_DIR / start_query / "converted_queries.json"
     if converted_path.exists():
-        return load_queries(converted_path), f"{converted_path}（AI変換済み）"
-    return chain_queries, "チェーン検出結果（Access SQLのまま）"
-
-
-def process_group(start_query: str, all_queries: dict[str, str], schema: dict, query_name_set: set[str]) -> None:
-    group_name = start_query
-    chain_queries, chain_parents = detect_chain(start_query, all_queries, query_name_set)
-
-    if not chain_queries:
-        print(f"[{group_name}] 警告: 起点クエリ '{start_query}' が query_dependencies.json に見つかりません。スキップします。")
+        queries = load_queries(converted_path)
+        source_label = f"converted_queries.json（AI変換済み）"
+    else:
+        print(f"[{group_name}] エラー: converted_queries.json が見つかりません。スキップします。")
         return
 
-    queries, source_label = resolve_queries_for_analysis(start_query, chain_queries)
+    if not queries:
+        print(f"[{group_name}] 警告: converted_queries.json が空です。スキップします。")
+        return
     print(f"[{group_name}] リネージ解析に使うSQL: {source_label}")
 
     analysis_log: dict[str, dict] = {}
@@ -93,34 +78,29 @@ def process_group(start_query: str, all_queries: dict[str, str], schema: dict, q
     df_table_usage = build_table_usage_dataframe(table_usage_rows)
 
     out_dir = OUTPUT_DIR / group_name
-    write_group_output(out_dir, df_lineage, df_table_usage, chain_queries, chain_parents, analysis_log, error_log)
+    write_group_output(out_dir, df_lineage, df_table_usage, queries, analysis_log, error_log)
 
     print(f"[{group_name}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
     print(f"  -> {out_dir}/lineage.xlsx, table_usage.xlsx, chain_queries.json, analysis.json, error.json")
 
 
 def main() -> None:
-    all_queries = load_queries(QUERY_DEPENDENCIES_FILE)
     schema = load_schema(TABLES_FILE)
-    query_name_set = set(all_queries)
 
-    try:
-        start_queries = discover_start_queries()
-    except FileNotFoundError:
-        start_queries = []
+    start_queries = discover_start_queries()
 
     if not start_queries:
-        print(f"エラー: {START_QUERIES_FILE} が見つからないか、起点クエリが1件も定義されていません。")
+        print(f"エラー: {INPUT_DIR} 下に chain_queries.json が見つかりません。")
+        print(f"VBAが出力した input/<起点クエリ名>/chain_queries.json を配置してください。")
         sys.exit(1)
 
-    print(f"読み込んだ全クエリ数: {len(all_queries)}")
     print(f"起点クエリ数: {len(start_queries)}")
     for name in start_queries:
         print(f"  - {name}")
     print()
 
     for start_query in start_queries:
-        process_group(start_query, all_queries, schema, query_name_set)
+        process_group(start_query, schema)
 
 
 if __name__ == "__main__":
