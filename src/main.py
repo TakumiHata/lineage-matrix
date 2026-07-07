@@ -22,7 +22,7 @@ input/<起点クエリ>/converted_queries.json として配置しておくと、
 
 import sys
 
-from config import INPUT_DIR, OUTPUT_DIR, QUERY_DEPENDENCIES_FILE, TABLES_FILE, discover_start_queries
+from config import INPUT_DIR, OUTPUT_DIR, QUERY_DEPENDENCIES_FILE, START_QUERIES_FILE, TABLES_FILE, discover_start_queries
 from lineage_extract import extract_lineage_rows, extract_select_columns, extract_used_tables
 from loader import load_queries, load_schema
 from report import build_lineage_dataframe, build_table_usage_dataframe, write_group_output
@@ -45,7 +45,7 @@ def resolve_queries_for_analysis(start_query: str, chain_queries: dict[str, str]
 
 def process_group(start_query: str, all_queries: dict[str, str], schema: dict, query_name_set: set[str]) -> None:
     group_name = start_query
-    chain_queries = detect_chain(start_query, all_queries, query_name_set)
+    chain_queries, chain_parents = detect_chain(start_query, all_queries, query_name_set)
 
     if not chain_queries:
         print(f"[{group_name}] 警告: 起点クエリ '{start_query}' が query_dependencies.json に見つかりません。スキップします。")
@@ -93,7 +93,7 @@ def process_group(start_query: str, all_queries: dict[str, str], schema: dict, q
     df_table_usage = build_table_usage_dataframe(table_usage_rows)
 
     out_dir = OUTPUT_DIR / group_name
-    write_group_output(out_dir, df_lineage, df_table_usage, chain_queries, analysis_log, error_log)
+    write_group_output(out_dir, df_lineage, df_table_usage, chain_queries, chain_parents, analysis_log, error_log)
 
     print(f"[{group_name}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
     print(f"  -> {out_dir}/lineage.xlsx, table_usage.xlsx, chain_queries.json, analysis.json, error.json")
@@ -104,9 +104,13 @@ def main() -> None:
     schema = load_schema(TABLES_FILE)
     query_name_set = set(all_queries)
 
-    start_queries = discover_start_queries()
+    try:
+        start_queries = discover_start_queries()
+    except FileNotFoundError:
+        start_queries = []
+
     if not start_queries:
-        print(f"エラー: input/ 直下に起点クエリ用のサブフォルダが見つかりません。")
+        print(f"エラー: {START_QUERIES_FILE} が見つからないか、起点クエリが1件も定義されていません。")
         sys.exit(1)
 
     print(f"読み込んだ全クエリ数: {len(all_queries)}")

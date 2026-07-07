@@ -59,14 +59,17 @@ def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict,
 
 def detect_chain(
     start_query: str, all_queries: dict[str, str], query_name_set: set[str], dialect: str = "tsql"
-) -> dict[str, str]:
-    """起点クエリから到達可能な全クエリを返す {クエリ名: SQL}。
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """起点クエリから到達可能な全クエリを返す ({クエリ名: SQL}, {クエリ名: 呼び出し元クエリ名のリスト})。
 
     各クエリのSQLで参照されている名前を query_name_set と照合することで
     「クエリ参照かテーブル参照か」を判別し、クエリ参照であれば再帰的に辿る。
     visited（訪問済み）を管理するため、循環参照があっても無限ループにはならない。
+    呼び出し元は複数ありうる（同じクエリが複数のクエリから参照されうる）ため、
+    クエリ名ごとにリストで持つ（登場順、重複なし）。起点クエリの呼び出し元は空リスト。
     """
     visited: dict[str, str] = {}
+    parents: dict[str, list[str]] = {}
     stack = [start_query]
 
     while stack:
@@ -77,7 +80,11 @@ def detect_chain(
 
         for ref_name in _referenced_table_names(all_queries[name], dialect):
             matched = next((q for q in query_name_set if q.lower() == ref_name.lower()), None)
-            if matched is not None and matched not in visited:
-                stack.append(matched)
+            if matched is not None:
+                parents.setdefault(matched, [])
+                if name not in parents[matched]:
+                    parents[matched].append(name)
+                if matched not in visited:
+                    stack.append(matched)
 
-    return visited
+    return visited, parents

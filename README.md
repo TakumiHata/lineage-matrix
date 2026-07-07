@@ -19,8 +19,9 @@ python3 src/main.py
 ```
 
 リポジトリルートから実行する（`input/`・`output/` は実行時のカレントディレクトリ基準の相対パス）。
-`input/query_dependencies.json`・`input/table.json`（全クエリ・全テーブルのフラットな一覧）を読み込み、
-`input/` 直下のサブフォルダ名で指定された起点クエリごとに `output/<起点クエリ名>/` へ結果を生成する。
+`input/query_dependencies.json`・`input/table.json`（全クエリ・全テーブルのフラットな一覧）と
+`input/start_queries.json`（起点クエリ名の配列）を読み込み、起点クエリごとに
+`output/<起点クエリ名>/` へ結果を生成する。
 
 ---
 
@@ -30,9 +31,12 @@ python3 src/main.py
 input/
 ├── query_dependencies.json   # 全クエリのフラットな一覧（VBAスクリプト①が出力、Access SQLのまま）
 ├── table.json                # 全テーブルのフラットな一覧（VBAスクリプト②が出力）
-├── クエリMain/                # フォルダ名が起点クエリを指定する。中身は空でよい
-└── クエリ入札/                # （converted_queries.json を置く場合はこの下に置く）
+├── start_queries.json        # 起点クエリ名の配列（例：["クエリMain", "クエリ入札"]）
+└── クエリ入札/                # 任意。converted_queries.json を置く場合だけ作成する
 ```
+
+起点クエリの指定は `start_queries.json` に名前を追記するだけでよく、フォルダ作成は
+`converted_queries.json`（AI変換済みSQL）を使う場合にのみ必要になる。
 
 チェーン検出（起点クエリから芋づる式にクエリ依存関係を辿ること）は、以前はVBA側が担い
 起点クエリ単位のフォルダにあらかじめ切り分け済みのデータを出力していたが、現在は
@@ -42,8 +46,8 @@ VBAはチェーン追跡を一切行わず、Accessの全クエリ・全テー�
 ### `query_dependencies.json`（クエリ一覧・全件フラット）
 
 Accessの全クエリと、そのSQL本文（Access SQLのまま、変換不要）を並べた配列。起点クエリ／親クエリの
-情報は持たない（`起点クエリ`はどのクエリがどのフォルダに属するかではなく、`input/`直下の
-サブフォルダ名そのもので指定される）。
+情報は持たない（`起点クエリ`はどのクエリがどのフォルダに属するかではなく、`input/start_queries.json`
+で指定される）。
 
 ```json
 [
@@ -74,7 +78,8 @@ Accessの全クエリと、そのSQL本文（Access SQLのまま、変換不要�
 1. `python3 src/main.py` を実行すると、チェーン検出で特定した各起点クエリのクエリ一覧が
    `output/<起点クエリ名>/chain_queries.json`（Access SQLのまま）として出力される。
 2. これをAI変換にかけ、結果を `input/<起点クエリ名>/converted_queries.json`
-   （`chain_queries.json` と同じ `[{ "クエリ名": ..., "SQL": ... }, ...]` 形式）として配置する。
+   （`[{ "クエリ名": ..., "SQL": ... }, ...]` 形式。`chain_queries.json` にある `呼び出し元` は
+   読み込み側では使わないため含めなくてよい）として配置する。
 3. 再度 `python3 src/main.py` を実行すると、`src/main.py` の `resolve_queries_for_analysis()` が
    このファイルの存在を検知し、リネージ解析（`sql_expand`→`lineage_extract`）に使うSQLとして
    優先的に読み込む。存在しなければ、従来通りチェーン検出結果のSQLがそのまま使われる。
@@ -159,10 +164,14 @@ Accessの全クエリと、そのSQL本文（Access SQLのまま、変換不要�
 
 ```json
 [
-  { "クエリ名": "クエリMain",     "SQL": "SELECT ..." },
-  { "クエリ名": "クエリ工事集計", "SQL": "SELECT ..." }
+  { "クエリ名": "クエリMain",     "SQL": "SELECT ...", "呼び出し元": [] },
+  { "クエリ名": "クエリ工事集計", "SQL": "SELECT ...", "呼び出し元": ["クエリMain"] }
 ]
 ```
+
+| フィールド | 内容 |
+|---|---|
+| `呼び出し元` | このクエリをFROM/JOIN句で参照している、チェーン内の他クエリ名の一覧。1つのクエリが複数のクエリから参照されることもあるため配列。起点クエリ自身は常に `[]`。 |
 
 このファイルをAI変換にかけ、結果を `input/<起点クエリ名>/converted_queries.json` として
 配置すると、次回実行時のリネージ解析にそちらが優先して使われる（詳細は前述の
@@ -212,7 +221,7 @@ Accessの全クエリと、そのSQL本文（Access SQLのまま、変換不要�
 ```
 src/
 ├── main.py             # エントリポイント：起点クエリの発見、チェーン検出（detect_chain）、ログ組み立て
-├── config.py            # パス関連の定数、起点クエリ（サブフォルダ名）の発見
+├── config.py            # パス関連の定数、起点クエリ（start_queries.json）の発見
 ├── loader.py             # input/*.json（フラットな全クエリ・全テーブル）の読み込み
 ├── sql_expand.py         # クエリ参照のインライン展開（AST操作、analysis.json用ログ生成）
 ├── lineage_extract.py    # lineage() を辿ってフラット行を組み立てる
@@ -223,8 +232,8 @@ src/
 各モジュールはスクリプトと同じディレクトリにある兄弟モジュールとして素朴に import している
 （Pythonが実行スクリプトのディレクトリを自動的に `sys.path` に加えるため、パッケージ化は不要）。
 
-起点クエリのサブフォルダ（`input/<起点クエリ名>/`）が1つも見つからない場合、`main()` はエラー
-メッセージを表示して終了コード1で終了する。
+`input/start_queries.json` が存在しないか、起点クエリが1件も定義されていない場合、`main()` は
+エラーメッセージを表示して終了コード1で終了する。
 
 ## ディレクトリ構成
 
@@ -240,7 +249,8 @@ src/
 ├── input/
 │   ├── query_dependencies.json
 │   ├── table.json
-│   └── <起点クエリ名>/              # 中身は空でよい（converted_queries.json を置く場合はここ）
+│   ├── start_queries.json           # 起点クエリ名の配列
+│   └── <起点クエリ名>/              # 任意。converted_queries.json を置く場合だけ作成する
 ├── output/                          # 生成される成果物（git管理外）
 │   └── <起点クエリ名>/
 │       ├── lineage.xlsx
