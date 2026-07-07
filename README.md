@@ -1,7 +1,9 @@
 # lineage-matrix
 
-Accessクエリを SQL Server 用 SQL に変換した後の SQL 群を解析し、各クエリの出力カラムが
-どのテーブル・カラムに由来するかをフラットテーブル形式で Excel 出力するツール。
+VBA が検出したAccess クエリのチェーン（`converted_queries.json`）を解析し、
+各クエリの出力カラムがどのテーブル・カラムに由来するかをフラットテーブル形式で Excel 出力するツール。
+
+**AI変換済みSQL Server用SQL を対象** にした、リネージ解析と影響範囲分析に特化したツール。
 
 カラムの由来解決には [SQLGlot](https://github.com/tobymao/sqlglot) の `lineage()` を使用し、
 サブクエリ・CTE・集計関数（SUM等）・クエリ間参照を含む複雑な構造にも対応する。
@@ -19,9 +21,11 @@ python3 src/main.py
 ```
 
 リポジトリルートから実行する（`input/`・`output/` は実行時のカレントディレクトリ基準の相対パス）。
-`input/query_dependencies.json`・`input/table.json`（全クエリ・全テーブルのフラットな一覧）と
-`input/start_queries.json`（起点クエリ名の配列）を読み込み、起点クエリごとに
-`output/<起点クエリ名>/` へ結果を生成する。
+`input/table.json`（全テーブルの一覧）と `input/<起点クエリ名>/converted_queries.json`（AI変換済みのクエリ一覧）
+を読み込み、起点クエリごとに `output/<起点クエリ名>/` へ結果を生成する。
+
+起点クエリは `input/` 直下のサブフォルダのうち、`converted_queries.json` が存在するものから **自動検出** される。
+設定ファイルは不要。
 
 ---
 
@@ -29,63 +33,46 @@ python3 src/main.py
 
 ```
 input/
-├── query_dependencies.json   # 全クエリのフラットな一覧（VBAスクリプト①が出力、Access SQLのまま）
-├── table.json                # 全テーブルのフラットな一覧（VBAスクリプト②が出力）
-├── start_queries.json        # 起点クエリ名の配列（例：["クエリMain", "クエリ入札"]）
-└── クエリ入札/                # 任意。converted_queries.json を置く場合だけ作成する
+├── table.json                           # 全テーブルのフラットな一覧（VBAが出力）
+├── クエリ工事委託分析/
+│   └── converted_queries.json          # AI変換済みSQL（必須）
+└── クエリ入札委託集計分析/
+    └── converted_queries.json          # AI変換済みSQL（必須）
 ```
 
-起点クエリの指定は `start_queries.json` に名前を追記するだけでよく、フォルダ作成は
-`converted_queries.json`（AI変換済みSQL）を使う場合にのみ必要になる。
+**起点クエリは自動検出される**：`input/` 直下のサブフォルダのうち、
+`converted_queries.json` が存在するサブフォルダ名が起点クエリとして自動的に認識される。
+設定ファイル（`start_queries.json` など）は不要。
 
-チェーン検出（起点クエリから芋づる式にクエリ依存関係を辿ること）は、以前はVBA側が担い
-起点クエリ単位のフォルダにあらかじめ切り分け済みのデータを出力していたが、現在は
-lineage-matrix 側（`src/sql_expand.py` の `detect_chain()`）が sqlglot のAST解析で行う。
-VBAはチェーン追跡を一切行わず、Accessの全クエリ・全テーブルをフラットに出力するだけでよい。
+### 運用フロー
 
-### `query_dependencies.json`（クエリ一覧・全件フラット）
+1. **VBA実行**: Access クエリを検出・チェーン検出 → `chain_queries.json` 出力
+2. **AI変換**: `chain_queries.json` をAI変換サービスで SQL Server SQL に変換
+3. **配置**: 変換結果を `input/<起点クエリ名>/converted_queries.json` に配置
+4. **実行**: `python3 src/main.py` → 自動検出・リネージ解析 → 結果出力
 
-Accessの全クエリと、そのSQL本文（Access SQLのまま、変換不要）を並べた配列。起点クエリ／親クエリの
-情報は持たない（`起点クエリ`はどのクエリがどのフォルダに属するかではなく、`input/start_queries.json`
-で指定される）。
+### `converted_queries.json`（AI変換済みSQLのフラット一覧）
+
+VBA がチェーン検出した結果をAI変換したもの。配列形式で、各要素は`クエリ名` と `SQL` を持つ。
 
 ```json
 [
-  { "クエリ名": "クエリMain",     "SQL": "SELECT ..." },
-  { "クエリ名": "クエリ工事集計", "SQL": "SELECT [工事ID], SUM([発注金額]) AS [発注合計] FROM クエリ工事基本 GROUP BY [工事ID]" },
-  { "クエリ名": "クエリ工事基本", "SQL": "SELECT ..." }
+  { "クエリ名": "クエリ工事基本",   "SQL": "SELECT A.[工事ID], A.[工事名称], B.[発注金額], B.[発注日] FROM [dbo].[工事台帳] A JOIN [dbo].[発注台帳] B ON A.[工事ID] = B.[工事ID]" },
+  { "クエリ名": "クエリ工事集計",   "SQL": "SELECT [工事ID], [工事名称], SUM([発注金額]) AS [発注合計] FROM クエリ工事基本 GROUP BY [工事ID], [工事名称]" },
+  { "クエリ名": "クエリ工事委託分析", "SQL": "SELECT クエリ工事集計.[工事名称], ... FROM クエリ工事集計 JOIN ..." }
 ]
 ```
 
 | フィールド | 型 | 内容 |
 |---|---|---|
 | `クエリ名` | string | Accessクエリ名。`src/loader.py` の `load_queries()` がこれをキーとして辞書化する。 |
-| `SQL` | string | Access SQLのまま（変換不要）。`detect_chain()` はこれを `dialect="tsql"` でパースしてFROM/JOIN句のテーブル・クエリ参照を検出する（構造抽出が目的で、Access固有関数などが未変換でも通常は問題ない）。 |
+| `SQL` | string | AI変換済みの SQL Server 用 SQL。スキーマ修飾（`[dbo].[テーブル名]`）を含む。 |
 
-**クエリ間参照はそのままでよい**：AI変換はAccess固有構文（Transform・IIF等）をSQL Server用に変換するだけで、クエリ間の参照（FROM句に他のAccessクエリ名がそのまま残る）は解決しない。この参照解決には2つの側面がある。
+**テーブル参照の形式**: スキーマ修飾を含む `[dbo].[テーブル名]` の形式。
+sqlglot が正確に解析できるため、リネージ解決が正確になる。
 
-1. **どのクエリを起点クエリのチェーンに含めるか**：`src/sql_expand.py` の `detect_chain()` が、起点クエリから`find_all(exp.Table)`でFROM/JOIN句の参照を再帰的に辿り、全クエリ名の集合（`query_name_set`）と照合してクエリ参照かテーブル参照かを判別する。訪問済み集合を持つため循環参照があっても無限ループにはならない。
-2. **リネージ解決時のインライン展開**：独自のAST操作ではなく、`sqlglot.lineage()` 標準の `sources=` 引数（内部で `sqlglot.expressions.expand()` を呼ぶ）に `クエリ名 → SQL` の辞書をそのまま渡すことで行っている（`src/lineage_extract.py`）。`exp.expand()` は展開したサブクエリに `/* source: 元のクエリ名 */` というコメントを自動付与し、`lineage()` はこれを検出して各ノードの `source_name` にセットする。この仕組みにより、FROM句で `AS 任意のエイリアス` のように別名を付けていても、そのホップが実際にどの登録済みクエリの内部かをテキスト一致や独自ロジックなしで判定できる（`src/sql_expand.py` の `expand_query_ast()` は `analysis.json` 用のログ生成にのみ使用し、実際のリネージ解決には使っていない）。
-
-例えば「クエリ工事集計」は `FROM クエリ工事基本` とだけ書けばよく、`クエリ工事基本` の中身をあらかじめサブクエリとして埋め込んでおく必要はない。
-
-### `converted_queries.json`（AI変換済みSQLの任意配置・起点クエリごと）
-
-`detect_chain()` はAccess SQLのままでもFROM/JOIN句の構造抽出はできるが、`sqlglot.lineage()` による
-本格的なカラム単位のリネージ解決には、AI変換済みのSQL Server用SQLの方が正確な結果になる。
-そのためのワークフローとして：
-
-1. `python3 src/main.py` を実行すると、チェーン検出で特定した各起点クエリのクエリ一覧が
-   `output/<起点クエリ名>/chain_queries.json`（Access SQLのまま）として出力される。
-2. これをAI変換にかけ、結果を `input/<起点クエリ名>/converted_queries.json`
-   （`[{ "クエリ名": ..., "SQL": ... }, ...]` 形式。`chain_queries.json` にある `呼び出し元` は
-   読み込み側では使わないため含めなくてよい）として配置する。
-3. 再度 `python3 src/main.py` を実行すると、`src/main.py` の `resolve_queries_for_analysis()` が
-   このファイルの存在を検知し、リネージ解析（`sql_expand`→`lineage_extract`）に使うSQLとして
-   優先的に読み込む。存在しなければ、従来通りチェーン検出結果のSQLがそのまま使われる。
-
-チェーン検出自体（`detect_chain()`）は常に `input/query_dependencies.json` の内容で行われ、
-`converted_queries.json` の有無には影響されない。
+**クエリ間参照はそのまま**：`FROM クエリ工事基本` のようにクエリ名で参照する。
+リネージ解析時に `sources=` で展開される。
 
 ### `table.json`（テーブル情報・全件フラット）
 
@@ -117,15 +104,13 @@ Accessの全クエリと、そのSQL本文（Access SQLのまま、変換不要�
 
 | フィールド | 型 | 内容 |
 |---|---|---|
-| `テーブル名` | string | Accessクエリ上で参照される論理名。`lineage()` のスキーマ辞書のキーになる。また `find_query_table_collisions()` がクエリ名とテーブル名の衝突を検知する際にも使われる。 |
-| `種別` | string | 「ローカルテーブル」／「リンクテーブル」等。現状のパイプラインでは未使用（メタデータとして保持のみ）。 |
-| `接続先` | string | リンクテーブルの接続先ファイルパス等。現状のパイプラインでは未使用。 |
-| `物理名` | string | 接続先における実際のオブジェクト名。現状のパイプラインでは未使用（`テーブル名`と異なる場合がある）。 |
+| `テーブル名` | string | Accessクエリ上で参照される論理名。`lineage()` のスキーマ辞書のキーになる。 |
+| `種別` | string | 「ローカルテーブル」／「リンクテーブル」等。メタデータとして保持。 |
+| `接続先` | string | リンクテーブルの接続先ファイルパス等。メタデータとして保持。 |
+| `物理名` | string | 接続先における実際のオブジェクト名。メタデータとして保持。 |
 | `カラム` | array | そのテーブルが持つカラムの配列。 |
 | `カラム[].名前` | string | カラム名。 |
-| `カラム[].型` | string（省略可） | カラムの型。**省略時は `"text"` として扱われる**。型の値自体は突合には使われず、`lineage()` に「このテーブルにこのカラムが存在する」ことを伝えるためだけに使われる。 |
-
-**注意点（大文字小文字）**：T-SQLは識別子の大文字小文字を区別しないため、`lineage()` がブラケットなしの識別子を解決する際、ASCII文字を含む名前（例：`工事ID`、`クエリ工事CTE集計`）が内部的に小文字化されることがある（`工事id`、`クエリ工事cte集計`）。`src/lineage_extract.py` の `restore_schema_casing()` / `restore_query_casing()` がこれを検知し、`table.json` / `query_dependencies.json` に定義された正しい表記に復元してから出力する。
+| `カラム[].型` | string（省略可） | カラムの型。省略時は `"text"` として扱われる。 |
 
 ---
 
