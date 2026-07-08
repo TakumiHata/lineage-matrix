@@ -7,16 +7,16 @@ from config import TABLES_FILE
 
 
 def _load_json_with_encoding(path: Path) -> dict:
-    """JSONファイルを複数エンコーディングで試して読み込む。
-    Shift-JISまたはUTF-8のいずれかで保存されたファイルに対応。
+    """JSONファイルをUTF-8（BOM有無いずれも可）として読み込む。
+    VBA側の出力仕様は常にUTF-8のため、他エンコーディングへの総当たりは行わない。
+    総当たりにすると、誤ったエンコーディングでも偶然デコードが成功し、
+    文字化けに気づかないまま処理が進んでしまう恐れがあるため。
     """
-    for encoding in ["utf-8", "shift_jis", "cp932"]:
-        try:
-            with open(path, encoding=encoding) as f:
-                return json.load(f)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            continue
-    raise ValueError(f"Unable to decode {path} with any supported encoding (utf-8, shift_jis, cp932)")
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            return json.load(f)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError(f"{path} をUTF-8として読み込めませんでした。入力ファイルはUTF-8で保存してください。") from e
 
 
 def load_queries(path: Path) -> dict[str, str]:
