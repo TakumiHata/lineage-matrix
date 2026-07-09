@@ -35,24 +35,12 @@ def build_lineage_dataframe(rows: list[dict]) -> pd.DataFrame:
 def write_group_output(
     out_dir: Path,
     df_lineage: pd.DataFrame,
-    chain_queries: dict[str, str],
     analysis_log: dict,
     error_log: list[dict],
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df_lineage.to_excel(out_dir / "lineage.xlsx", index=False)
-
-    # VBAが出力した chain_queries.json をそのまま output にもコピーして出力する。
-    # これはAI変換の入力として使うため、元の形式（名前・SQL・呼び出し元）を
-    # 保持する。
-    chain_queries_list = [
-        {"クエリ名": name, "SQL": sql}
-        for name, sql in chain_queries.items()
-    ]
-    with open(out_dir / "chain_queries.json", "w", encoding="utf-8") as f:
-        json.dump(chain_queries_list, f, ensure_ascii=False, indent=2)
-        f.write("\n")
 
     with open(out_dir / "analysis.json", "w", encoding="utf-8") as f:
         json.dump(analysis_log, f, ensure_ascii=False, indent=2)

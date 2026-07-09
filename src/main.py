@@ -67,10 +67,10 @@ def process_group(start_query: str, schema: dict) -> None:
     df_lineage = build_lineage_dataframe(all_rows)
 
     out_dir = OUTPUT_DIR / group_name
-    write_group_output(out_dir, df_lineage, queries, analysis_log, error_log)
+    write_group_output(out_dir, df_lineage, analysis_log, error_log)
 
     print(f"[{group_name}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
-    print(f"  -> {out_dir}/lineage.xlsx, chain_queries.json, analysis.json, error.json")
+    print(f"  -> {out_dir}/lineage.xlsx, analysis.json, error.json")
 
 
 def main() -> None:
