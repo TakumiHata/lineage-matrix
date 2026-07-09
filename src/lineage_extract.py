@@ -5,6 +5,8 @@ import sqlglot.expressions as exp
 from sqlglot.lineage import build_scope, to_node
 from sqlglot.optimizer.qualify import qualify
 
+from sql_expand import expand_query_ast
+
 
 def _has_star(parsed: exp.Expression) -> bool:
     return any(
@@ -49,28 +51,27 @@ def extract_select_columns(sql: str, schema: dict, dialect: str = "tsql") -> lis
     return columns
 
 
+def _restore_casing(name: str | None, candidates) -> str | None:
+    # tsqlは大文字小文字を区別しないため、qualify()通過後の識別子はASCII部分が
+    # 小文字化されることがある（例: 工事ID → 工事id、クエリ工事CTE集計 → クエリ工事cte集計）。
+    # schema/queriesに登録された元の表記を候補群から探し、A5M2定義書等との
+    # Excel突合で一致させられるようにする。
+    if not name:
+        return name
+    for candidate in candidates:
+        if candidate.lower() == name.lower():
+            return candidate
+    return name
+
+
 def restore_schema_casing(table_name: str | None, column_name: str | None, schema: dict) -> str | None:
-    # tsqlは大文字小文字を区別しないため、schema付きlineage()解決後の
-    # カラム名はASCII部分が小文字化されることがある（例: 工事ID → 工事id）。
-    # schema.json の正しい表記に戻し、A5M2定義書とのExcel突合で
-    # 一致させられるようにする。
-    if not table_name or not column_name or table_name not in schema:
+    if not table_name or table_name not in schema:
         return column_name
-    for real_col in schema[table_name]:
-        if real_col.lower() == column_name.lower():
-            return real_col
-    return column_name
+    return _restore_casing(column_name, schema[table_name])
 
 
 def restore_query_casing(reference_query: str, queries: dict[str, str]) -> str:
-    # 「参照クエリ」も参照カラムと同様、tsqlの大文字小文字非区別によって
-    # ブラケットなしで書かれた箇所（JOIN の ON 句等）ではASCII部分が
-    # 小文字化されることがある（例: クエリ工事CTE集計 → クエリ工事cte集計）。
-    # query_dependencies.json に登録された正しい表記に戻す。
-    for real_name in queries:
-        if real_name.lower() == reference_query.lower():
-            return real_name
-    return reference_query
+    return _restore_casing(reference_query, queries)
 
 
 def leaf_row(
@@ -139,15 +140,23 @@ def walk_leaves(node):
     yield from _walk(node, [], "")
 
 
+def _failure_row(query_name: str, output_col: str, error: Exception) -> tuple[dict, dict]:
+    """lineage解決に失敗した場合の error_log 用エントリと lineage.xlsx 用の失敗行を組で返す。"""
+    error_entry = {"クエリ": query_name, "種別": "lineage失敗", "対象カラム": output_col, "メッセージ": str(error)}
+    row = {
+        "開始クエリ": query_name,
+        "最終出力カラム": f"{output_col} ({error})",
+        "参照クエリパス": ["解析失敗"],
+        "参照テーブル": "不明",
+        "参照カラム": "不明",
+    }
+    return error_entry, row
+
+
 def extract_lineage_rows(
     query_name: str, sql: str, schema: dict, queries: dict[str, str], error_log: list[dict]
 ) -> list[dict]:
     rows = []
-
-    # sources= には自分自身を含めない。exp.expand() は循環検出を行わないため、
-    # 自己参照的な名前がSQL中にあった場合の無限再帰を避ける。
-    sources = {name: q_sql for name, q_sql in queries.items() if name != query_name}
-
     output_cols = extract_select_columns(sql, schema)
 
     # sqlglot.lineage.lineage() はカラムを「名前」で引くため、AS別名のない
@@ -155,36 +164,20 @@ def extract_lineage_rows(
     # どちらも「名称」カラムを持ち、SELECT A.名称, B.名称 のように書かれた場合）、
     # 常に最初に出現した同名カラムに解決されてしまい、2番目以降の出力カラムの
     # 参照テーブル・カラムが誤って重複する。to_node() は位置（int）でも引けるため、
-    # lineage() 内部と同じ前処理（クエリ間参照展開→qualify→スコープ構築）を行った上で
-    # ここでは位置指定で解決し、同名出力カラムを正しく区別する。
+    # expand_query_ast() でクエリ間参照を展開・qualify()してスコープを構築した上で、
+    # ここでは位置指定で解決し同名出力カラムを正しく区別する。
     # validate_qualify_columns=True にすることで、JOIN先の複数テーブルに存在する
     # 同名カラムが非修飾のまま参照され一意に解決できない場合も、"不明"のまま
     # 無警告で処理が進むのではなく例外として検知しエラーログに残す。
     try:
-        parsed = sqlglot.parse_one(sql, dialect="tsql")
-        if sources:
-            parsed = exp.expand(
-                parsed,
-                {name: sqlglot.parse_one(s, dialect="tsql") for name, s in sources.items()},
-                dialect="tsql",
-            )
-        qualified = qualify(parsed, schema=schema, dialect="tsql", validate_qualify_columns=True, identify=False)
+        expanded = expand_query_ast(query_name, queries)
+        qualified = qualify(expanded, schema=schema, dialect="tsql", validate_qualify_columns=True, identify=False)
         scope = build_scope(qualified)
     except Exception as e:
         for output_col in output_cols:
-            error_log.append({
-                "クエリ": query_name,
-                "種別": "lineage失敗",
-                "対象カラム": output_col,
-                "メッセージ": str(e),
-            })
-            rows.append({
-                "開始クエリ": query_name,
-                "最終出力カラム": f"{output_col} ({e})",
-                "参照クエリパス": ["解析失敗"],
-                "参照テーブル": "不明",
-                "参照カラム": "不明",
-            })
+            error_entry, row = _failure_row(query_name, output_col, e)
+            error_log.append(error_entry)
+            rows.append(row)
         return rows
 
     cache: dict = {}
@@ -192,19 +185,9 @@ def extract_lineage_rows(
         try:
             node = to_node(i, scope, dialect="tsql", schema=schema, _cache=cache)
         except Exception as e:
-            error_log.append({
-                "クエリ": query_name,
-                "種別": "lineage失敗",
-                "対象カラム": output_col,
-                "メッセージ": str(e),
-            })
-            rows.append({
-                "開始クエリ": query_name,
-                "最終出力カラム": f"{output_col} ({e})",
-                "参照クエリパス": ["解析失敗"],
-                "参照テーブル": "不明",
-                "参照カラム": "不明",
-            })
+            error_entry, row = _failure_row(query_name, output_col, e)
+            error_log.append(error_entry)
+            rows.append(row)
             continue
 
         for holder, leaf, path in walk_leaves(node):

@@ -27,28 +27,24 @@ def process_group(start_query: str, schema: dict) -> None:
     
     # converted_queries.json（AI変換済みSQL）を優先して使用
     converted_path = INPUT_DIR / start_query / "converted_queries.json"
-    if converted_path.exists():
-        queries = load_queries(converted_path)
-        source_label = f"converted_queries.json（AI変換済み）"
-    else:
+    if not converted_path.exists():
         print(f"[{group_name}] エラー: converted_queries.json が見つかりません。スキップします。")
         return
 
+    queries = load_queries(converted_path)
     if not queries:
         print(f"[{group_name}] 警告: converted_queries.json が空です。スキップします。")
         return
-    print(f"[{group_name}] リネージ解析に使うSQL: {source_label}")
+    print(f"[{group_name}] リネージ解析に使うSQL: converted_queries.json（AI変換済み）")
 
     analysis_log: dict[str, dict] = {}
     error_log: list[dict] = []
+    all_rows = []
 
-    # クエリ参照の展開（sqlglot標準の exp.expand()）は sqlglot_lineage() の
-    # sources= 引数が内部で行うため、ここでは analysis.json 用のログ取得と
-    # クエリ名／テーブル名の衝突警告のためだけに呼び出す。
-    for name in queries:
-        select_cols = extract_select_columns(queries[name], schema)
+    for name, sql in queries.items():
+        select_cols = extract_select_columns(sql, schema)
 
-        collisions = find_query_table_collisions(queries[name], queries, schema)
+        collisions = find_query_table_collisions(sql, queries, schema)
         error_log.extend({"クエリ": name, "種別": "クエリ名衝突警告", "メッセージ": w} for w in collisions)
 
         try:
@@ -66,9 +62,7 @@ def process_group(start_query: str, schema: dict) -> None:
                 "expand_sql": None,
             }
 
-    all_rows = []
-    for query_name, sql in queries.items():
-        all_rows.extend(extract_lineage_rows(query_name, sql, schema, queries, error_log))
+        all_rows.extend(extract_lineage_rows(name, sql, schema, queries, error_log))
 
     df_lineage = build_lineage_dataframe(all_rows)
 

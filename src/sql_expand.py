@@ -34,26 +34,22 @@ def expand_query_ast(query_name: str, queries: dict[str, str], dialect: str = "t
 
 
 def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict, dialect: str = "tsql") -> list[str]:
-    """このSQLの参照のうち、クエリ名とテーブル名の両方に一致するものを検出する。
-    exp.expand() はクエリを優先して展開するため、意図しない展開が起きていないか
-    確認するための警告メッセージを返す。
-    """
-    warnings = []
-    for ref_name in _referenced_table_names(sql, dialect):
-        is_query = any(q.lower() == ref_name.lower() for q in queries)
-        is_table = any(t.lower() == ref_name.lower() for t in schema)
-        if is_query and is_table:
-            warnings.append(f"'{ref_name}' はクエリ名とテーブル名の両方に一致します。クエリとして展開されます。")
-    return warnings
+    """このSQLのFROM/JOIN句で参照されている名前のうち、クエリ名とテーブル名の
+    両方に一致するものを検出する。exp.expand() はクエリを優先して展開するため、
+    意図しない展開が起きていないか確認するための警告メッセージを返す。
 
-
-def _referenced_table_names(sql: str, dialect: str = "tsql") -> list[str]:
-    """このSQLのFROM/JOIN句で参照されている名前（クエリ名またはテーブル名）の
-    一覧を返す。find_all(exp.Table) はテキスト一致ではなく、FROM/JOIN句の
-    テーブル参照として構文的に認識されたノードのみを返すため、文字列リテラルや
-    カラム参照（ドット修飾）は別のノード種別（exp.Literal / exp.Column）なので
-    誤ってマッチすることはない。スキーマ修飾（[dbo].[テーブル]等）がある参照は
+    find_all(exp.Table) はテキスト一致ではなく、FROM/JOIN句のテーブル参照として
+    構文的に認識されたノードのみを返すため、文字列リテラルやカラム参照（ドット修飾）
+    を誤ってマッチすることはない。スキーマ修飾（[dbo].[テーブル]等）がある参照は
     クエリ参照ではないため除外する。
     """
+    warnings = []
     parsed = sqlglot.parse_one(sql, dialect=dialect)
-    return [t.name for t in parsed.find_all(exp.Table) if not t.db]
+    for t in parsed.find_all(exp.Table):
+        if t.db:
+            continue
+        is_query = any(q.lower() == t.name.lower() for q in queries)
+        is_table = any(tbl.lower() == t.name.lower() for tbl in schema)
+        if is_query and is_table:
+            warnings.append(f"'{t.name}' はクエリ名とテーブル名の両方に一致します。クエリとして展開されます。")
+    return warnings
