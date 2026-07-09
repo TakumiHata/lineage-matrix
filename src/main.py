@@ -15,9 +15,9 @@ output/<起点クエリ>/lineage.xlsx に出力するスクリプト。
 import sys
 
 from config import INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
-from lineage_extract import extract_lineage_rows, extract_select_columns, extract_used_tables
+from lineage_extract import extract_lineage_rows, extract_select_columns
 from loader import load_queries, load_schema
-from report import build_lineage_dataframe, build_table_usage_dataframe, write_group_output
+from report import build_lineage_dataframe, write_group_output
 from sql_expand import expand_query_ast, find_query_table_collisions
 
 
@@ -41,11 +41,10 @@ def process_group(start_query: str, schema: dict) -> None:
 
     analysis_log: dict[str, dict] = {}
     error_log: list[dict] = []
-    table_usage_rows: list[dict] = []
 
     # クエリ参照の展開（sqlglot標準の exp.expand()）は sqlglot_lineage() の
     # sources= 引数が内部で行うため、ここでは analysis.json 用のログ取得と
-    # クエリ名／テーブル名の衝突警告、テーブル使用状況の抽出のためだけに呼び出す。
+    # クエリ名／テーブル名の衝突警告のためだけに呼び出す。
     for name in queries:
         select_cols = extract_select_columns(queries[name], schema)
 
@@ -59,9 +58,6 @@ def process_group(start_query: str, schema: dict) -> None:
                 "expand_query_ast_repr": repr(ast_result).splitlines(),
                 "expand_sql": ast_result.sql(dialect="tsql"),
             }
-            table_usage_rows.extend(
-                {"開始クエリ": name, "参照テーブル": table} for table in extract_used_tables(ast_result)
-            )
         except Exception as e:
             error_log.append({"クエリ": name, "種別": "expand_sql失敗", "メッセージ": str(e)})
             analysis_log[name] = {
@@ -75,13 +71,12 @@ def process_group(start_query: str, schema: dict) -> None:
         all_rows.extend(extract_lineage_rows(query_name, sql, schema, queries, error_log))
 
     df_lineage = build_lineage_dataframe(all_rows)
-    df_table_usage = build_table_usage_dataframe(table_usage_rows)
 
     out_dir = OUTPUT_DIR / group_name
-    write_group_output(out_dir, df_lineage, df_table_usage, queries, analysis_log, error_log)
+    write_group_output(out_dir, df_lineage, queries, analysis_log, error_log)
 
     print(f"[{group_name}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
-    print(f"  -> {out_dir}/lineage.xlsx, table_usage.xlsx, chain_queries.json, analysis.json, error.json")
+    print(f"  -> {out_dir}/lineage.xlsx, chain_queries.json, analysis.json, error.json")
 
 
 def main() -> None:
