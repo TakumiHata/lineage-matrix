@@ -51,6 +51,87 @@ input/
 3. **配置**: 変換結果を `input/<起点クエリ名>/converted_queries.json` に配置
 4. **実行**: `python3 src/main.py` → 自動検出・リネージ解析 → 結果出力
 
+### AI変換プロンプト
+
+`chain_queries.json` → `converted_queries.json` のAI変換に使用するプロンプト。
+JOIN構造の欠落防止と、SQL内コメント埋め込みによる列消失防止のための規定を含む
+（詳細は本リポジトリでの検証結果を参照）。
+
+```markdown
+以下のJSONに含まれるSQLをAccess（Jet SQL）からSQL Server（T-SQL）に変換してください。
+
+## 入力
+
+添付するJSONファイル（chain_queries.json）には以下の構造でクエリが含まれています。
+
+[
+  { "クエリ名": "クエリMain",     "SQL": "SELECT ... （Access SQL）" },
+  { "クエリ名": "クエリ工事集計", "SQL": "SELECT ... （Access SQL）" }
+]
+
+## 変換ルール
+
+以下のAccess固有の構文をSQL Server用に変換してください。
+
+| Access構文 | SQL Server変換後 |
+|---|---|
+| `IIf(条件, 真, 偽)` | `CASE WHEN 条件 THEN 真 ELSE 偽 END` |
+| `Nz(値, 代替値)` | `ISNULL(値, 代替値)` |
+| `Now()` | `GETDATE()` |
+| `Date()` | `CAST(GETDATE() AS DATE)` |
+| `DateAdd("d", n, 日付)` | `DATEADD(day, n, 日付)` |
+| `DateDiff("d", 日付1, 日付2)` | `DATEDIFF(day, 日付1, 日付2)` |
+| `Format(値, "書式")` | `FORMAT(値, '書式')`（書式文字列はAccessと.NETでトークンの大文字小文字の意味が異なるため、`mm`=月→`MM`、`nn`=分→`mm`など正しく変換すること） |
+| `Mid(str, start, len)` | `SUBSTRING(str, start, len)` |
+| `InStr(str, 検索文字)` | `CHARINDEX(検索文字, str)` |
+| `文字列1 & 文字列2` | `ISNULL(文字列1, '') + ISNULL(文字列2, '')`（`&`はNULLを無視して結合するが`+`はNULLを伝播するため、NULLを許容し得るカラムには必ずISNULLを挟むこと） |
+| `Like "*abc*"` / `Like "a?c"` | `LIKE '%abc%'` / `LIKE 'a_c'`（ワイルドカード `*`→`%`、`?`→`_`） |
+| `#2024/01/01#` | `'2024-01-01'` |
+| `True` / `False` | `1` / `0` |
+| `SELECT DISTINCTROW` | T-SQLに直接対応する構文がない。単純な`DISTINCT`と意味が異なりうるため、機械的に置き換えず警告として残すこと（後述の`warnings`参照） |
+| `PARAMETERS ... ;` 宣言 | SQL Serverでは不要のため削除し、警告として残すこと |
+| `TRANSFORM ... PIVOT`（クロス集計） | PIVOTまたはCASE WHENで書き換え。ピボット列の値が静的に特定できない場合は機械的に変換せず警告として残すこと |
+
+## 構造の完全性（最重要・省略厳禁）
+
+- **SELECT / WHERE / ORDER BY / GROUP BY 句が参照する全てのテーブル（エイリアス含む）は、必ずFROM/JOIN句にも存在しなければならない。** 変換後、参照テーブルとFROM/JOIN句のテーブルを突き合わせて、一つでも欠落があれば変換を中断し、`warnings`にその旨を記録すること。
+- **SQLは行数・文字数に関わらず、一字一句省略せず変換すること。** 長いSELECT句・深いJOINのネストであっても、要約・間引き・一部省略は禁止する。
+- 変換前のJOIN数と変換後のJOIN数が一致するか必ず数えて確認すること。一致しない場合は理由を`warnings`に記録すること。
+
+## 変換時の注意事項
+
+- クエリ名は変更しないこと
+- テーブル名・カラム名は変更しないこと（日本語のまま）
+- ブラケット（`[]`）はSQL Serverでもそのまま使用可
+- FROM句・JOIN句のクエリ名参照（例：`FROM クエリ工事集計`）はそのまま残すこと
+  （クエリ参照の解決はツール側で行うため変換不要）
+- 各SQLは単一のSELECT文とすること。文末にセミコロン（`;`）を付けないこと
+  （文末セミコロンの重複や、セミコロン後のコメントが残ると、後続の解析ツールがSQLを複数ステートメントと誤認してエラーになるため）
+- **変換が困難・不確かな箇所、あるいは暗黙の型変換に依存する箇所は、SQL文字列の中にコメントを埋め込まず、必ず出力JSONの`warnings`配列に記録すること。**
+  （SQL内に`-- コメント`を混在させると、AIがコメントと実コードを同じ行に誤って配置した場合、後続のSQL解析ツールが気づかないまま該当箇所を丸ごと欠落させる恐れがあるため、SQL本文へのコメント埋め込みは一切禁止する）
+
+## 出力
+
+入力と同じJSON構造に加えて、クエリごとに`warnings`配列（問題なければ空配列）を持たせて出力してください。
+出力は有効なJSON形式とし、SQL文字列内の改行・ダブルクォート・バックスラッシュは正しくエスケープすること。
+
+[
+  {
+    "クエリ名": "クエリMain",
+    "SQL": "SELECT ... （T-SQL、コメントなし）",
+    "warnings": ["要確認：DISTINCTROWをDISTINCTに置換（意味が異なる可能性あり）"]
+  },
+  {
+    "クエリ名": "クエリ工事集計",
+    "SQL": "SELECT ... （T-SQL）",
+    "warnings": []
+  }
+]
+
+出力したJSONは `converted_queries.json` として保存し、
+`input/<起点クエリ名>/converted_queries.json` に配置してください。
+```
+
 ### `converted_queries.json`（AI変換済みSQLのフラット一覧）
 
 VBA がチェーン検出した結果をAI変換したもの。配列形式で、各要素は`クエリ名` と `SQL` を持つ。
@@ -171,11 +252,54 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 
 ---
 
+## 事前検証：`validate.py`
+
+AI変換の精度には波があるため、`main.py`本体のリネージ解析とは別に、
+**変換済みSQLが構文的・スキーマ的に破綻していないか**だけを素早く判定する独立コマンド。
+
+```bash
+python3 src/validate.py
+```
+
+`main.py`と同様に `input/` 直下を自動検出して、起点クエリごとに `output/<起点クエリ名>/validation.json` を出力する。
+NGが1件でもあれば終了コード1で終了する（CI等での自動チェックにそのまま使える）。
+
+### 検知内容
+
+`sqlglot`の構文解析と `qualify(validate_qualify_columns=True)` を使い、以下を検知する。
+
+| 種別 | 検知方法 |
+|---|---|
+| 構文エラー | `sqlglot.parse(sql, dialect="tsql", error_level=ErrorLevel.RAISE)` の `ParseError` |
+| 複数ステートメント | 同上のparse結果が2文以上（`converted_queries.json`の「単一SELECT文」ルール違反） |
+| 未知の関数 | `exp.Anonymous` ノードの検出＝tsql方言が認識できない関数呼び出し（未変換のAccess関数の疑い。例：`Nz`の変換漏れ） |
+| スキーマ不整合 | `expand_query_ast` + `qualify(validate_qualify_columns=True)` の例外（`table.json`に存在しないテーブル・カラム参照。`error.json`の`lineage失敗`と同じ検出経路を、本解析より前に単体で走らせている） |
+
+```json
+[
+  {
+    "クエリ": "テストクエリ",
+    "判定": "NG",
+    "問題": [
+      { "種別": "未知の関数", "メッセージ": "tsql方言で認識できない関数呼び出し（未変換のAccess関数の疑い）: Nz" },
+      { "種別": "スキーマ不整合", "メッセージ": "Column '名称' could not be resolved for table: 'po_発注業種'. ..." }
+    ]
+  }
+]
+```
+
+### 限界
+
+DBに接続して実際に実行するわけではないため、あくまで**sqlglotが文法・スキーマ整合性の面で破綻していないと判断できるか**の判定に留まる。型変換・権限等の実行時エラーまでは検知できない。
+
+---
+
 ## `src/` のモジュール構成
 
 ```
 src/
 ├── main.py             # エントリポイント：起点クエリの発見、チェーン検出（detect_chain）、ログ組み立て
+├── validate.py           # main.pyとは別の事前検証コマンド（構文・スキーマチェック）
 ├── config.py            # パス関連の定数、起点クエリ（start_queries.json）の発見
 ├── loader.py             # input/*.json（フラットな全クエリ・全テーブル）の読み込み
 ├── sql_expand.py         # クエリ参照のインライン展開（AST操作、analysis.json用ログ生成）
