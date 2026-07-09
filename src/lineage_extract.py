@@ -2,7 +2,7 @@
 
 import sqlglot
 import sqlglot.expressions as exp
-from sqlglot.lineage import lineage as sqlglot_lineage
+from sqlglot.lineage import build_scope, to_node
 from sqlglot.optimizer.qualify import qualify
 
 
@@ -166,9 +166,49 @@ def extract_lineage_rows(
     # 自己参照的な名前がSQL中にあった場合の無限再帰を避ける。
     sources = {name: q_sql for name, q_sql in queries.items() if name != query_name}
 
-    for output_col in extract_select_columns(sql, schema):
+    output_cols = extract_select_columns(sql, schema)
+
+    # sqlglot.lineage.lineage() はカラムを「名前」で引くため、AS別名のない
+    # SELECT句で複数の出力カラムが同名になる場合（例: 結合した2テーブルが
+    # どちらも「名称」カラムを持ち、SELECT A.名称, B.名称 のように書かれた場合）、
+    # 常に最初に出現した同名カラムに解決されてしまい、2番目以降の出力カラムの
+    # 参照テーブル・カラムが誤って重複する。to_node() は位置（int）でも引けるため、
+    # lineage() 内部と同じ前処理（クエリ間参照展開→qualify→スコープ構築）を行った上で
+    # ここでは位置指定で解決し、同名出力カラムを正しく区別する。
+    # validate_qualify_columns=True にすることで、JOIN先の複数テーブルに存在する
+    # 同名カラムが非修飾のまま参照され一意に解決できない場合も、"不明"のまま
+    # 無警告で処理が進むのではなく例外として検知しエラーログに残す。
+    try:
+        parsed = sqlglot.parse_one(sql, dialect="tsql")
+        if sources:
+            parsed = exp.expand(
+                parsed,
+                {name: sqlglot.parse_one(s, dialect="tsql") for name, s in sources.items()},
+                dialect="tsql",
+            )
+        qualified = qualify(parsed, schema=schema, dialect="tsql", validate_qualify_columns=True, identify=False)
+        scope = build_scope(qualified)
+    except Exception as e:
+        for output_col in output_cols:
+            error_log.append({
+                "クエリ": query_name,
+                "種別": "lineage失敗",
+                "対象カラム": output_col,
+                "メッセージ": str(e),
+            })
+            rows.append({
+                "開始クエリ": query_name,
+                "最終出力カラム": f"{output_col} ({e})",
+                "参照クエリパス": ["解析失敗"],
+                "参照テーブル": "不明",
+                "参照カラム": "不明",
+            })
+        return rows
+
+    cache: dict = {}
+    for i, output_col in enumerate(output_cols):
         try:
-            node = sqlglot_lineage(column=output_col, sql=sql, schema=schema, sources=sources, dialect="tsql")
+            node = to_node(i, scope, dialect="tsql", schema=schema, _cache=cache)
         except Exception as e:
             error_log.append({
                 "クエリ": query_name,
