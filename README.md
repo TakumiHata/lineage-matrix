@@ -315,7 +315,7 @@ src/
 ├── validate.py           # main.pyとは別の事前検証コマンド（構文・スキーマチェック）
 ├── config.py            # パス関連の定数、起点クエリ（start_queries.json）の発見
 ├── loader.py             # input/*.json（フラットな全クエリ・全テーブル）の読み込み
-├── sql_expand.py         # クエリ参照のインライン展開（AST操作。analysis.json用ログとlineage解決の両方で使う）
+├── sql_expand.py         # クエリ参照のインライン展開＋qualify検証（main.pyとvalidate.pyで共通利用）
 ├── lineage_extract.py    # lineage() を辿ってフラット行を組み立てる
 └── report.py             # DataFrame化とファイル出力（Excel / JSON）
 ```

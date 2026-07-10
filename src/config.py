@@ -6,6 +6,9 @@ INPUT_DIR = Path("input")
 OUTPUT_DIR = Path("output")
 TABLES_FILE = INPUT_DIR / "table.json"
 
+# AI変換済みSQLはSQL Server用SQLのみを対象とするツールのため、方言は固定。
+DIALECT = "tsql"
+
 
 def discover_start_queries() -> list[str]:
     """input/ 直下のサブフォルダのうち converted_queries.json が存在するものを

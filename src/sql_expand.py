@@ -18,9 +18,12 @@ Node.source_name に反映する。これにより、末端の物理テーブル
 
 import sqlglot
 import sqlglot.expressions as exp
+from sqlglot.optimizer.qualify import qualify
+
+from config import DIALECT
 
 
-def expand_query_ast(query_name: str, queries: dict[str, str], dialect: str = "tsql") -> exp.Expression:
+def expand_query_ast(query_name: str, queries: dict[str, str], dialect: str = DIALECT) -> exp.Expression:
     parsed = sqlglot.parse_one(queries[query_name], dialect=dialect)
     # exp.expand() は sources の値に .subquery() を直接呼ぶため、
     # あらかじめパース済みの Query オブジェクトである必要がある
@@ -34,7 +37,20 @@ def expand_query_ast(query_name: str, queries: dict[str, str], dialect: str = "t
     return exp.expand(parsed, sources, dialect=dialect)
 
 
-def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict, dialect: str = "tsql") -> list[str]:
+def qualify_expanded(expanded: exp.Expression, schema: dict, dialect: str = DIALECT) -> exp.Expression:
+    """expand_query_ast() の結果をqualify()でスキーマ検証する。
+
+    main.py（analysis.json用ログ・lineage解決）とvalidate.py（事前検証）の両方が
+    「展開してqualify検証する」という同じ手順を必要とするため、ここに集約している。
+    validate_qualify_columns=True にすることで、JOIN先の複数テーブルに存在する
+    同名カラムが非修飾のまま参照され一意に解決できない場合も、"不明"のまま
+    無警告で処理が進むのではなく例外として検知できる。
+    qualify() は引数を破壊的に変更し、戻り値は同じオブジェクト。
+    """
+    return qualify(expanded, schema=schema, dialect=dialect, validate_qualify_columns=True, identify=False)
+
+
+def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict, dialect: str = DIALECT) -> list[str]:
     """このSQLのFROM/JOIN句で参照されている名前のうち、クエリ名とテーブル名の
     両方に一致するものを検出する。exp.expand() はクエリを優先して展開するため、
     意図しない展開が起きていないか確認するための警告メッセージを返す。

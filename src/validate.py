@@ -11,17 +11,16 @@ DBに接続して実際に実行するわけではないため、型変換や権
 あくまで「sqlglotが文法・スキーマ整合性の面で破綻していないと判断できるか」の判定。
 """
 
-import json
 import sys
 
 import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.errors import ErrorLevel, ParseError
-from sqlglot.optimizer.qualify import qualify
 
-from config import INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
+from config import DIALECT, INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
 from loader import load_queries, load_schema
-from sql_expand import expand_query_ast
+from report import write_json
+from sql_expand import expand_query_ast, qualify_expanded
 
 
 def validate_query(query_name: str, sql: str, queries: dict[str, str], schema: dict) -> dict:
@@ -29,7 +28,7 @@ def validate_query(query_name: str, sql: str, queries: dict[str, str], schema: d
     problems: list[dict] = []
 
     try:
-        stmts = sqlglot.parse(sql, dialect="tsql", error_level=ErrorLevel.RAISE)
+        stmts = sqlglot.parse(sql, dialect=DIALECT, error_level=ErrorLevel.RAISE)
     except ParseError as e:
         problems.append({"種別": "構文エラー", "メッセージ": str(e)})
         return {"クエリ": query_name, "判定": "NG", "問題": problems}
@@ -49,8 +48,7 @@ def validate_query(query_name: str, sql: str, queries: dict[str, str], schema: d
         })
 
     try:
-        expanded = expand_query_ast(query_name, queries)
-        qualify(expanded, schema=schema, dialect="tsql", validate_qualify_columns=True, identify=False)
+        qualify_expanded(expand_query_ast(query_name, queries), schema)
     except Exception as e:
         problems.append({"種別": "スキーマ不整合", "メッセージ": str(e)})
 
@@ -79,9 +77,7 @@ def main() -> None:
 
         out_dir = OUTPUT_DIR / start_query
         out_dir.mkdir(parents=True, exist_ok=True)
-        with open(out_dir / "validation.json", "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-            f.write("\n")
+        write_json(out_dir / "validation.json", results)
 
         print(f"[{start_query}] クエリ数={len(results)}, NG={ng_count} 件 -> {out_dir}/validation.json")
 

@@ -5,7 +5,8 @@ import sqlglot.expressions as exp
 from sqlglot.lineage import build_scope, to_node
 from sqlglot.optimizer.qualify import qualify
 
-from sql_expand import expand_query_ast
+from config import DIALECT
+from sql_expand import expand_query_ast, qualify_expanded
 
 
 def _has_star(parsed: exp.Expression) -> bool:
@@ -15,7 +16,7 @@ def _has_star(parsed: exp.Expression) -> bool:
     )
 
 
-def extract_select_columns(sql: str, schema: dict, dialect: str = "tsql") -> list[str]:
+def extract_select_columns(sql: str, schema: dict, dialect: str = DIALECT) -> list[str]:
     # parsed.selects は最も外側の SELECT の出力カラムのみを返す。
     # find_all(exp.Column) + 親でのフィルタでは、サブクエリ内部の
     # SELECT句のカラムまで拾ってしまい重複の原因になるため使わない。
@@ -182,11 +183,9 @@ def analyze_query(
     どちらも「名称」カラムを持ち、SELECT A.名称, B.名称 のように書かれた場合）、
     常に最初に出現した同名カラムに解決されてしまい、2番目以降の出力カラムの
     参照テーブル・カラムが誤って重複する。to_node() は位置（int）でも引けるため、
-    expand_query_ast() でクエリ間参照を展開・qualify()してスコープを構築した上で、
-    ここでは位置指定で解決し同名出力カラムを正しく区別する。
-    validate_qualify_columns=True にすることで、JOIN先の複数テーブルに存在する
-    同名カラムが非修飾のまま参照され一意に解決できない場合も、"不明"のまま
-    無警告で処理が進むのではなく例外として検知しエラーログに残す。
+    expand_query_ast() でクエリ間参照を展開・qualify_expanded()してスコープを構築した
+    上で、ここでは位置指定で解決し同名出力カラムを正しく区別する
+    （qualify_expanded() のvalidate_qualify_columns=Trueの意図は sql_expand.py 参照）。
     """
     output_cols = extract_select_columns(sql, schema)
     entry: dict = {
@@ -203,8 +202,8 @@ def analyze_query(
         # .copy() は不要（文字列化済みの entry の値には影響しない）。
         expanded = expand_query_ast(query_name, queries)
         entry["expand_query_ast_repr"] = repr(expanded).splitlines()
-        entry["expand_sql"] = expanded.sql(dialect="tsql")
-        qualified = qualify(expanded, schema=schema, dialect="tsql", validate_qualify_columns=True, identify=False)
+        entry["expand_sql"] = expanded.sql(dialect=DIALECT)
+        qualified = qualify_expanded(expanded, schema)
         scope = build_scope(qualified)
     except Exception as e:
         # expand_query_ast() は成功したが qualify()/build_scope() が失敗した場合、
@@ -219,7 +218,7 @@ def analyze_query(
     cache: dict = {}
     for i, output_col in enumerate(output_cols):
         try:
-            node = to_node(i, scope, dialect="tsql", schema=schema, _cache=cache)
+            node = to_node(i, scope, dialect=DIALECT, schema=schema, _cache=cache)
         except Exception as e:
             error_entry, row = _failure_row(query_name, output_col, e)
             error_log.append(error_entry)

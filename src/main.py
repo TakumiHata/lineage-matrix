@@ -23,19 +23,17 @@ from sql_expand import find_query_table_collisions
 
 def process_group(start_query: str, schema: dict) -> None:
     """起点クエリに対してリネージ解析を実行し、output/<起点クエリ>/ に結果を出力する。"""
-    group_name = start_query
-    
     # converted_queries.json（AI変換済みSQL）を優先して使用
     converted_path = INPUT_DIR / start_query / "converted_queries.json"
     if not converted_path.exists():
-        print(f"[{group_name}] エラー: converted_queries.json が見つかりません。スキップします。")
+        print(f"[{start_query}] エラー: converted_queries.json が見つかりません。スキップします。")
         return
 
     queries = load_queries(converted_path)
     if not queries:
-        print(f"[{group_name}] 警告: converted_queries.json が空です。スキップします。")
+        print(f"[{start_query}] 警告: converted_queries.json が空です。スキップします。")
         return
-    print(f"[{group_name}] リネージ解析に使うSQL: converted_queries.json（AI変換済み）")
+    print(f"[{start_query}] リネージ解析に使うSQL: converted_queries.json（AI変換済み）")
 
     analysis_log: dict[str, dict] = {}
     error_log: list[dict] = []
@@ -51,10 +49,10 @@ def process_group(start_query: str, schema: dict) -> None:
 
     df_lineage = build_lineage_dataframe(analysis_log)
 
-    out_dir = OUTPUT_DIR / group_name
+    out_dir = OUTPUT_DIR / start_query
     write_group_output(out_dir, df_lineage, analysis_log, error_log)
 
-    print(f"[{group_name}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
+    print(f"[{start_query}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
     print(f"  -> {out_dir}/lineage.xlsx, analysis.json, error.json")
 
 
@@ -64,8 +62,8 @@ def main() -> None:
     start_queries = discover_start_queries()
 
     if not start_queries:
-        print(f"エラー: {INPUT_DIR} 下に chain_queries.json が見つかりません。")
-        print(f"VBAが出力した input/<起点クエリ名>/chain_queries.json を配置してください。")
+        print(f"エラー: {INPUT_DIR} 下に converted_queries.json が見つかりません。")
+        print(f"AI変換済みSQLを input/<起点クエリ名>/converted_queries.json に配置してください。")
         sys.exit(1)
 
     print(f"起点クエリ数: {len(start_queries)}")

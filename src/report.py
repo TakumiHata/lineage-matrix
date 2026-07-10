@@ -35,6 +35,15 @@ def build_lineage_dataframe(analysis_log: dict[str, dict]) -> pd.DataFrame:
     return pd.DataFrame(expanded_rows, columns=columns)
 
 
+def write_json(path: Path, data) -> None:
+    """UTF-8・非ASCIIそのまま・インデント2・末尾改行付きでJSONを書き出す
+    （analysis.json/error.json/validation.json で共通の出力フォーマット）。
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
 def write_group_output(
     out_dir: Path,
     df_lineage: pd.DataFrame,
@@ -44,10 +53,5 @@ def write_group_output(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     df_lineage.to_excel(out_dir / "lineage.xlsx", index=False)
-
-    with open(out_dir / "analysis.json", "w", encoding="utf-8") as f:
-        json.dump(analysis_log, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    with open(out_dir / "error.json", "w", encoding="utf-8") as f:
-        json.dump(error_log, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    write_json(out_dir / "analysis.json", analysis_log)
+    write_json(out_dir / "error.json", error_log)
