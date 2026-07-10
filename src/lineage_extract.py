@@ -65,7 +65,16 @@ def _restore_casing(name: str | None, candidates) -> str | None:
     return name
 
 
+def restore_table_casing(table_name: str | None, schema: dict) -> str | None:
+    return _restore_casing(table_name, schema)
+
+
 def restore_schema_casing(table_name: str | None, column_name: str | None, schema: dict) -> str | None:
+    # table_name も qualify() 通過後は小文字化されている可能性があるため、
+    # schema のキーとして使う前に本来の表記へ復元しておく必要がある
+    # （復元前のtable_nameのままだと schema に存在せず、常にcolumn_nameが
+    # 未復元のまま返ってしまう）。
+    table_name = restore_table_casing(table_name, schema)
     if not table_name or table_name not in schema:
         return column_name
     return _restore_casing(column_name, schema[table_name])
@@ -84,7 +93,10 @@ def leaf_row(
     schema: dict,
     queries: dict[str, str],
 ) -> dict:
+    # leaf.name は qualify() 通過後のASCII部分が小文字化されている可能性があるため、
+    # "参照テーブル" に出す前に schema 上の本来の表記へ復元する。
     table_name = leaf.name if isinstance(leaf, exp.Table) else None
+    table_name = restore_table_casing(table_name, schema)
 
     # holder は SUM(...) のように集計関数がカラムを直接ラップすることがあるため、
     # holder.this が exp.Column である前提ではなく、式全体からカラム参照を探す。
