@@ -15,10 +15,10 @@ output/<起点クエリ>/lineage.xlsx に出力するスクリプト。
 import sys
 
 from config import INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
-from lineage_extract import extract_lineage_rows, extract_select_columns
+from lineage_extract import analyze_query
 from loader import load_queries, load_schema
 from report import build_lineage_dataframe, write_group_output
-from sql_expand import expand_query_ast, find_query_table_collisions
+from sql_expand import find_query_table_collisions
 
 
 def process_group(start_query: str, schema: dict) -> None:
@@ -39,32 +39,17 @@ def process_group(start_query: str, schema: dict) -> None:
 
     analysis_log: dict[str, dict] = {}
     error_log: list[dict] = []
-    all_rows = []
 
     for name, sql in queries.items():
-        select_cols = extract_select_columns(sql, schema)
-
         collisions = find_query_table_collisions(sql, queries, schema)
         error_log.extend({"クエリ": name, "種別": "クエリ名衝突警告", "メッセージ": w} for w in collisions)
 
-        try:
-            ast_result = expand_query_ast(name, queries)
-            analysis_log[name] = {
-                "extract_select_columns": select_cols,
-                "expand_query_ast_repr": repr(ast_result).splitlines(),
-                "expand_sql": ast_result.sql(dialect="tsql"),
-            }
-        except Exception as e:
-            error_log.append({"クエリ": name, "種別": "expand_sql失敗", "メッセージ": str(e)})
-            analysis_log[name] = {
-                "extract_select_columns": select_cols,
-                "expand_query_ast_repr": None,
-                "expand_sql": None,
-            }
+        # analyze_query() が expand_query_ast + qualify を1回だけ実行し、analysis.json用の
+        # ログとlineage行を同じ結果から作る。lineage.xlsx は各クエリの "lineage" を
+        # build_lineage_dataframe() で連結して組み立てる（analysis_logが唯一の解析結果）。
+        analysis_log[name] = analyze_query(name, sql, schema, queries, error_log)
 
-        all_rows.extend(extract_lineage_rows(name, sql, schema, queries, error_log))
-
-    df_lineage = build_lineage_dataframe(all_rows)
+    df_lineage = build_lineage_dataframe(analysis_log)
 
     out_dir = OUTPUT_DIR / group_name
     write_group_output(out_dir, df_lineage, analysis_log, error_log)

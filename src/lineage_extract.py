@@ -140,45 +140,81 @@ def walk_leaves(node):
     yield from _walk(node, [], "")
 
 
-def _failure_row(query_name: str, output_col: str, error: Exception) -> tuple[dict, dict]:
-    """lineage解決に失敗した場合の error_log 用エントリと lineage.xlsx 用の失敗行を組で返す。"""
-    error_entry = {"クエリ": query_name, "種別": "lineage失敗", "対象カラム": output_col, "メッセージ": str(error)}
-    row = {
+def _failure_row_only(query_name: str, output_col: str, error: Exception) -> dict:
+    """lineage.xlsx 用の失敗行（1カラム分）を作る。"""
+    return {
         "開始クエリ": query_name,
         "最終出力カラム": f"{output_col} ({error})",
         "参照クエリパス": ["解析失敗"],
         "参照テーブル": "不明",
         "参照カラム": "不明",
     }
-    return error_entry, row
 
 
-def extract_lineage_rows(
+def _failure_row(query_name: str, output_col: str, error: Exception) -> tuple[dict, dict]:
+    """カラム単位のlineage解決に失敗した場合の error_log 用エントリと lineage.xlsx 用の失敗行を組で返す。"""
+    error_entry = {"クエリ": query_name, "種別": "lineage失敗", "対象カラム": output_col, "メッセージ": str(error)}
+    return error_entry, _failure_row_only(query_name, output_col, error)
+
+
+def _failure_rows(query_name: str, output_cols: list[str], error: Exception) -> list[dict]:
+    """クエリ全体（expand_query_ast/qualify）の失敗時に、出力カラムごとの失敗行だけを作る。
+    error_log 側は呼び出し元がクエリ単位で1件だけ記録するため、ここではrowのみ返す
+    （_failure_row() を経由すると使わない error_entry まで毎回組み立ててしまうため）。
+    """
+    return [_failure_row_only(query_name, output_col, error) for output_col in output_cols]
+
+
+def analyze_query(
     query_name: str, sql: str, schema: dict, queries: dict[str, str], error_log: list[dict]
-) -> list[dict]:
-    rows = []
-    output_cols = extract_select_columns(sql, schema)
+) -> dict:
+    """1クエリを解析し、analysis.json のエントリ（selectカラム・展開後ASTのrepr・
+    展開後SQL・出力カラムごとのlineage行）を1つのdictにまとめて返す。
 
-    # sqlglot.lineage.lineage() はカラムを「名前」で引くため、AS別名のない
-    # SELECT句で複数の出力カラムが同名になる場合（例: 結合した2テーブルが
-    # どちらも「名称」カラムを持ち、SELECT A.名称, B.名称 のように書かれた場合）、
-    # 常に最初に出現した同名カラムに解決されてしまい、2番目以降の出力カラムの
-    # 参照テーブル・カラムが誤って重複する。to_node() は位置（int）でも引けるため、
-    # expand_query_ast() でクエリ間参照を展開・qualify()してスコープを構築した上で、
-    # ここでは位置指定で解決し同名出力カラムを正しく区別する。
-    # validate_qualify_columns=True にすることで、JOIN先の複数テーブルに存在する
-    # 同名カラムが非修飾のまま参照され一意に解決できない場合も、"不明"のまま
-    # 無警告で処理が進むのではなく例外として検知しエラーログに残す。
+    expand_query_ast() と qualify() をここで1回だけ実行し、その結果を
+    analysis.json 用のログとlineage解決の両方に使い回す。以前はこの2つを
+    main.py側とここでそれぞれ別に expand_query_ast + qualify していたため、
+    片方は成功扱いなのにもう片方は失敗扱いになる（analysis.jsonとlineage.xlsxの
+    判定がズレる）ことがあった。1回の計算結果を共有することでズレをなくす。
+
+    sqlglot.lineage.lineage() はカラムを「名前」で引くため、AS別名のない
+    SELECT句で複数の出力カラムが同名になる場合（例: 結合した2テーブルが
+    どちらも「名称」カラムを持ち、SELECT A.名称, B.名称 のように書かれた場合）、
+    常に最初に出現した同名カラムに解決されてしまい、2番目以降の出力カラムの
+    参照テーブル・カラムが誤って重複する。to_node() は位置（int）でも引けるため、
+    expand_query_ast() でクエリ間参照を展開・qualify()してスコープを構築した上で、
+    ここでは位置指定で解決し同名出力カラムを正しく区別する。
+    validate_qualify_columns=True にすることで、JOIN先の複数テーブルに存在する
+    同名カラムが非修飾のまま参照され一意に解決できない場合も、"不明"のまま
+    無警告で処理が進むのではなく例外として検知しエラーログに残す。
+    """
+    output_cols = extract_select_columns(sql, schema)
+    entry: dict = {
+        "extract_select_columns": output_cols,
+        "expand_query_ast_repr": None,
+        "expand_sql": None,
+        "lineage": [],
+    }
+
     try:
+        # expand_sql（見やすさのため元の大文字小文字を保つ）は qualify() で識別子が
+        # 正規化される前の expanded から文字列として先に確定させる。qualify() は
+        # 引数を破壊的に変更するが、その時点で expanded 自体はもう参照しないため
+        # .copy() は不要（文字列化済みの entry の値には影響しない）。
         expanded = expand_query_ast(query_name, queries)
+        entry["expand_query_ast_repr"] = repr(expanded).splitlines()
+        entry["expand_sql"] = expanded.sql(dialect="tsql")
         qualified = qualify(expanded, schema=schema, dialect="tsql", validate_qualify_columns=True, identify=False)
         scope = build_scope(qualified)
     except Exception as e:
-        for output_col in output_cols:
-            error_entry, row = _failure_row(query_name, output_col, e)
-            error_log.append(error_entry)
-            rows.append(row)
-        return rows
+        # expand_query_ast() は成功したが qualify()/build_scope() が失敗した場合、
+        # 上ですでに entry に repr/expand_sql を書き込んでいるため、ここで明示的に
+        # None へ戻さないと「一部だけ成功したように見える」矛盾した状態が残る。
+        entry["expand_query_ast_repr"] = None
+        entry["expand_sql"] = None
+        error_log.append({"クエリ": query_name, "種別": "expand_sql失敗", "メッセージ": str(e)})
+        entry["lineage"] = _failure_rows(query_name, output_cols, e)
+        return entry
 
     cache: dict = {}
     for i, output_col in enumerate(output_cols):
@@ -187,10 +223,10 @@ def extract_lineage_rows(
         except Exception as e:
             error_entry, row = _failure_row(query_name, output_col, e)
             error_log.append(error_entry)
-            rows.append(row)
+            entry["lineage"].append(row)
             continue
 
         for holder, leaf, path in walk_leaves(node):
-            rows.append(leaf_row(query_name, output_col, holder, leaf, path, schema, queries))
+            entry["lineage"].append(leaf_row(query_name, output_col, holder, leaf, path, schema, queries))
 
-    return rows
+    return entry

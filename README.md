@@ -215,14 +215,26 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 
 ### `analysis.json`
 
-クエリ名ごとの解析情報（デバッグ・検証用）。
+クエリ名ごとの解析結果そのもの。**`lineage.xlsx` はこの中身（各クエリの `lineage`）を
+連結して整形しただけのビュー**であり、別ロジックで再計算されたものではない
+（`analyze_query()` が `expand_query_ast` + `qualify` を1回だけ実行し、その結果を
+analysis.json用のログとlineage解決の両方に使い回している）。
 
 ```json
 {
   "クエリ工事集計": {
     "extract_select_columns": ["工事ID", "工事名称", "発注合計"],
     "expand_query_ast_repr": ["Select(", "  expressions=[...", "..."],
-    "expand_sql": "SELECT [工事ID], ... FROM (SELECT ...) AS [クエリ工事基本] GROUP BY ..."
+    "expand_sql": "SELECT [工事ID], ... FROM (SELECT ...) AS [クエリ工事基本] GROUP BY ...",
+    "lineage": [
+      {
+        "開始クエリ": "クエリ工事集計",
+        "最終出力カラム": "工事ID",
+        "参照クエリパス": ["クエリ工事基本"],
+        "参照テーブル": "T_工事",
+        "参照カラム": "工事ID"
+      }
+    ]
   }
 }
 ```
@@ -230,8 +242,9 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 - `extract_select_columns`：そのクエリのSELECT出力カラム一覧。`SELECT *`（テーブル修飾ありの`t.*`も含む）が含まれる場合は、`sqlglot.optimizer.qualify.qualify(expand_stars=True)`（`table.json`のスキーマを使用）で実際のカラム名リストに展開してから記録する。展開先が`table.json`に登録されていない参照（他クエリへの`*`等）の場合は展開できず`"*"`のまま残る
 - `expand_query_ast_repr`：クエリ参照展開後のASTの `repr()` を1行ずつ配列化したもの（`repr()` 自体はSQLGlot標準の多行整形。JSON文字列1本に詰めると改行がエスケープされて読みにくくなるため、`splitlines()` で配列にしている）
 - `expand_sql`：展開後の最終的なSQLテキスト
+- `lineage`：出力カラムごとのリネージ行（`lineage.xlsx`の1行に対応する未整形のフラット行。「参照クエリパス」は外側→内側の順の配列で、`lineage.xlsx`側では動的に「参照クエリ1, 参照クエリ2, ...」列に展開される）
 
-`expand_query_ast()` が例外を送出した場合は `expand_query_ast_repr` / `expand_sql` が `null` になる。
+`expand_query_ast()` または `qualify()` が例外を送出した場合、`expand_query_ast_repr` / `expand_sql` は `null` になり、`lineage` にはそのクエリの全出力カラム分の失敗行（`参照クエリパス: ["解析失敗"]`）が入る（`error.json`側は `expand_sql失敗` としてクエリ単位で1件のみ記録され、カラムごとに重複しない）。
 
 ### `error.json`
 
@@ -248,7 +261,7 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 ]
 ```
 
-`種別` は `クエリ名衝突警告`（クエリ名とテーブル名が同名で衝突）・`expand_sql失敗`（クエリ参照展開自体の例外）・`lineage失敗`（`sqlglot.lineage()` 呼び出しの例外、列単位）のいずれか。`lineage失敗`の場合、対応する行は `lineage.xlsx` 側にも「参照クエリ1」=「解析失敗」、「参照テーブル」「参照カラム」=「不明」として記録され、1クエリ・1カラムの失敗が他の処理を止めないようになっている。
+`種別` は `クエリ名衝突警告`（クエリ名とテーブル名が同名で衝突）・`expand_sql失敗`（`expand_query_ast`によるクエリ参照展開、または展開後の`qualify(validate_qualify_columns=True)`の例外。クエリ単位で1件のみ記録される）・`lineage失敗`（展開・qualify自体は成功した後、個別の出力カラムを`to_node()`で解決する際の例外。カラム単位）のいずれか。どちらの場合も、対応する行は `lineage.xlsx` 側に「参照クエリ1」=「解析失敗」、「参照テーブル」「参照カラム」=「不明」として記録され、1クエリ・1カラムの失敗が他の処理を止めないようになっている。
 
 ---
 
@@ -273,7 +286,7 @@ NGが1件でもあれば終了コード1で終了する（CI等での自動チ�
 | 構文エラー | `sqlglot.parse(sql, dialect="tsql", error_level=ErrorLevel.RAISE)` の `ParseError` |
 | 複数ステートメント | 同上のparse結果が2文以上（`converted_queries.json`の「単一SELECT文」ルール違反） |
 | 未知の関数 | `exp.Anonymous` ノードの検出＝tsql方言が認識できない関数呼び出し（未変換のAccess関数の疑い。例：`Nz`の変換漏れ） |
-| スキーマ不整合 | `expand_query_ast` + `qualify(validate_qualify_columns=True)` の例外（`table.json`に存在しないテーブル・カラム参照。`error.json`の`lineage失敗`と同じ検出経路を、本解析より前に単体で走らせている） |
+| スキーマ不整合 | `expand_query_ast` + `qualify(validate_qualify_columns=True)` の例外（`table.json`に存在しないテーブル・カラム参照。`error.json`の`expand_sql失敗`と同じ検出経路を、本解析より前に単体で走らせている） |
 
 ```json
 [
@@ -302,7 +315,7 @@ src/
 ├── validate.py           # main.pyとは別の事前検証コマンド（構文・スキーマチェック）
 ├── config.py            # パス関連の定数、起点クエリ（start_queries.json）の発見
 ├── loader.py             # input/*.json（フラットな全クエリ・全テーブル）の読み込み
-├── sql_expand.py         # クエリ参照のインライン展開（AST操作、analysis.json用ログ生成）
+├── sql_expand.py         # クエリ参照のインライン展開（AST操作。analysis.json用ログとlineage解決の両方で使う）
 ├── lineage_extract.py    # lineage() を辿ってフラット行を組み立てる
 └── report.py             # DataFrame化とファイル出力（Excel / JSON）
 ```

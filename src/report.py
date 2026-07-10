@@ -6,11 +6,14 @@ from pathlib import Path
 import pandas as pd
 
 
-def build_lineage_dataframe(rows: list[dict]) -> pd.DataFrame:
-    """rows の「参照クエリパス」（外側→内側のクエリ名リスト）を、そのグループ内の
-    最大ネスト数に合わせて 参照クエリ1, 参照クエリ2, ... の固定列に展開する。
+def build_lineage_dataframe(analysis_log: dict[str, dict]) -> pd.DataFrame:
+    """analysis_log（analysis.json とまったく同じ内容の解析結果）の各クエリエントリが
+    持つ "lineage" 行を連結し、「参照クエリパス」（外側→内側のクエリ名リスト）を、
+    そのグループ内の最大ネスト数に合わせて 参照クエリ1, 参照クエリ2, ... の固定列に展開する。
     経路が空（直接参照）の行は 参照クエリ1 に「（直接）」を入れ、残りは空欄にする。
     """
+    rows = [row for entry in analysis_log.values() for row in entry["lineage"]]
+
     max_depth = max((len(r["参照クエリパス"]) for r in rows), default=1)
     max_depth = max(max_depth, 1)
     ref_columns = [f"参照クエリ{i}" for i in range(1, max_depth + 1)]

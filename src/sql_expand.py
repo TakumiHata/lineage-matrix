@@ -1,8 +1,9 @@
 """クエリ間参照（FROM句に他のAccessクエリ名がそのまま残る）を扱う。
 
 - expand_query_ast(): sqlglot標準の exp.expand() でクエリ参照をサブクエリに
-  インライン展開する（analysis.json 用のログ生成にのみ使用し、実際のリネージ
-  解決は sqlglot.lineage() の sources= 引数が別途行う）。
+  インライン展開する。analysis.json 用のログ（expand_query_ast_repr / expand_sql）
+  と、qualify() + build_scope() によるリネージ解決の両方がこの展開結果を使う
+  （lineage_extract.analyze_query() 参照）。
 
 チェーン検出（起点クエリから到達可能な全クエリを辿ること）はVBA側が
 担当し、input/<起点クエリ>/chain_queries.json として出力される。
