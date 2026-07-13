@@ -13,18 +13,29 @@ import sqlglot.expressions as exp
 
 from casing import restore_table_casing
 from config import DIALECT
-from sql_expand import find_ci
+
+
+def _find_ci(name: str, candidates) -> str | None:
+    """candidates（イテラブル）の中から大文字小文字を無視してnameに一致する元の
+    表記を返す。見つからなければNone。
+    """
+    for c in candidates:
+        if c.lower() == name.lower():
+            return c
+    return None
 
 
 def direct_references(
-    sql: str, queries: dict[str, str], schema: dict, dialect: str = DIALECT
+    query_name: str, sql: str, queries: dict[str, str], schema: dict, error_log: list[dict], dialect: str = DIALECT
 ) -> tuple[set[str], set[str]]:
     """このクエリ自身のSQL（クエリ参照展開前）が直接触れる物理テーブル名の集合と、
     直接呼び出す登録済みクエリ名の集合を返す。WITH句のCTE名はFROM句上でも
     exp.Tableとして現れるため、物理テーブルとして誤検出しないよう除外する。
+
     非修飾名がqueriesとschemaの両方に一致する場合はexp.expand()と同じ優先順位で
-    クエリとして扱う（この場合の警告は sql_expand.find_query_table_collisions が
-    別途出す）。
+    クエリとして扱い、意図しない展開でないか確認できるようerror_logに警告を積む
+    （find_all(exp.Table)の同じ走査結果を使って判定できるため、テーブル/クエリの
+    分類とここでまとめて行う）。
     """
     parsed = sqlglot.parse_one(sql, dialect=dialect)
     cte_names = {c.alias for c in parsed.find_all(exp.CTE)}
@@ -34,11 +45,18 @@ def direct_references(
     for t in parsed.find_all(exp.Table):
         if t.name in cte_names:
             continue
-        if not t.db:
-            matched_query = find_ci(t.name, queries)
-            if matched_query:
-                child_queries.add(matched_query)
-                continue
+        matched_query = None if t.db else _find_ci(t.name, queries)
+        if matched_query:
+            child_queries.add(matched_query)
+            if _find_ci(t.name, schema):
+                error_log.append(
+                    {
+                        "クエリ": query_name,
+                        "種別": "クエリ名衝突警告",
+                        "メッセージ": f"'{t.name}' はクエリ名とテーブル名の両方に一致します。クエリとして展開されます。",
+                    }
+                )
+            continue
         tables.add(restore_table_casing(t.name, schema) or t.name)
 
     return tables, child_queries
@@ -58,7 +76,7 @@ def resolve_table_usage(
     direct: dict[str, set[str]] = {}
     children: dict[str, set[str]] = {}
     for name, sql in queries.items():
-        direct[name], children[name] = direct_references(sql, queries, schema, dialect)
+        direct[name], children[name] = direct_references(name, sql, queries, schema, error_log, dialect)
 
     subtree_cache: dict[str, set[str]] = {}
 

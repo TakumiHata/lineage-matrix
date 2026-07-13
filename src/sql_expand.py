@@ -48,33 +48,3 @@ def qualify_expanded(expanded: exp.Expression, schema: dict, dialect: str = DIAL
     qualify() は引数を破壊的に変更し、戻り値は同じオブジェクト。
     """
     return qualify(expanded, schema=schema, dialect=dialect, validate_qualify_columns=True, identify=False)
-
-
-def find_ci(name: str, candidates) -> str | None:
-    """candidates（イテラブル）の中から大文字小文字を無視してnameに一致する元の
-    表記を返す。見つからなければNone。table_usage.py のクエリ/テーブル分類でも使う。
-    """
-    for c in candidates:
-        if c.lower() == name.lower():
-            return c
-    return None
-
-
-def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict, dialect: str = DIALECT) -> list[str]:
-    """このSQLのFROM/JOIN句で参照されている名前のうち、クエリ名とテーブル名の
-    両方に一致するものを検出する。exp.expand() はクエリを優先して展開するため、
-    意図しない展開が起きていないか確認するための警告メッセージを返す。
-
-    find_all(exp.Table) はテキスト一致ではなく、FROM/JOIN句のテーブル参照として
-    構文的に認識されたノードのみを返すため、文字列リテラルやカラム参照（ドット修飾）
-    を誤ってマッチすることはない。スキーマ修飾（[dbo].[テーブル]等）がある参照は
-    クエリ参照ではないため除外する。
-    """
-    warnings = []
-    parsed = sqlglot.parse_one(sql, dialect=dialect)
-    for t in parsed.find_all(exp.Table):
-        if t.db:
-            continue
-        if find_ci(t.name, queries) and find_ci(t.name, schema):
-            warnings.append(f"'{t.name}' はクエリ名とテーブル名の両方に一致します。クエリとして展開されます。")
-    return warnings

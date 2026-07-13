@@ -122,7 +122,7 @@ def walk_leaves(node):
     yield from _walk(node, [], "")
 
 
-def _failure_row_only(query_name: str, output_col: str, error: Exception) -> dict:
+def _failure_row(query_name: str, output_col: str, error: Exception) -> dict:
     """lineage.xlsx 用の失敗行（1カラム分）を作る。"""
     return {
         "開始クエリ": query_name,
@@ -131,20 +131,6 @@ def _failure_row_only(query_name: str, output_col: str, error: Exception) -> dic
         "参照テーブル": "不明",
         "参照カラム": "不明",
     }
-
-
-def _failure_row(query_name: str, output_col: str, error: Exception) -> tuple[dict, dict]:
-    """カラム単位のlineage解決に失敗した場合の error_log 用エントリと lineage.xlsx 用の失敗行を組で返す。"""
-    error_entry = {"クエリ": query_name, "種別": "lineage失敗", "対象カラム": output_col, "メッセージ": str(error)}
-    return error_entry, _failure_row_only(query_name, output_col, error)
-
-
-def _failure_rows(query_name: str, output_cols: list[str], error: Exception) -> list[dict]:
-    """クエリ全体（expand_query_ast/qualify）の失敗時に、出力カラムごとの失敗行だけを作る。
-    error_log 側は呼び出し元がクエリ単位で1件だけ記録するため、ここではrowのみ返す
-    （_failure_row() を経由すると使わない error_entry まで毎回組み立ててしまうため）。
-    """
-    return [_failure_row_only(query_name, output_col, error) for output_col in output_cols]
 
 
 def analyze_query(
@@ -193,7 +179,7 @@ def analyze_query(
         entry["expand_query_ast_repr"] = None
         entry["expand_sql"] = None
         error_log.append({"クエリ": query_name, "種別": "expand_sql失敗", "メッセージ": str(e)})
-        entry["lineage"] = _failure_rows(query_name, output_cols, e)
+        entry["lineage"] = [_failure_row(query_name, c, e) for c in output_cols]
         return entry
 
     cache: dict = {}
@@ -201,9 +187,8 @@ def analyze_query(
         try:
             node = to_node(i, scope, dialect=DIALECT, schema=schema, _cache=cache)
         except Exception as e:
-            error_entry, row = _failure_row(query_name, output_col, e)
-            error_log.append(error_entry)
-            entry["lineage"].append(row)
+            error_log.append({"クエリ": query_name, "種別": "lineage失敗", "対象カラム": output_col, "メッセージ": str(e)})
+            entry["lineage"].append(_failure_row(query_name, output_col, e))
             continue
 
         for holder, leaf, path in walk_leaves(node):

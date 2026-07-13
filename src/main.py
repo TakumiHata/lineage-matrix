@@ -19,7 +19,6 @@ from lineage_extract import analyze_query
 from loader import load_queries, load_schema
 from matrix import build_matrix_dataframe, build_matrix_rows
 from report import build_lineage_dataframe, write_group_output
-from sql_expand import find_query_table_collisions
 from table_usage import resolve_table_usage
 
 
@@ -37,23 +36,17 @@ def process_group(start_query: str, schema: dict) -> None:
         return
     print(f"[{start_query}] リネージ解析に使うSQL: converted_queries.json（AI変換済み）")
 
-    analysis_log: dict[str, dict] = {}
     error_log: list[dict] = []
-
-    for name, sql in queries.items():
-        collisions = find_query_table_collisions(sql, queries, schema)
-        error_log.extend({"クエリ": name, "種別": "クエリ名衝突警告", "メッセージ": w} for w in collisions)
-
-        # analyze_query() が expand_query_ast + qualify を1回だけ実行し、analysis.json用の
-        # ログとlineage行を同じ結果から作る。lineage.xlsx は各クエリの "lineage" を
-        # build_lineage_dataframe() で連結して組み立てる（analysis_logが唯一の解析結果）。
-        analysis_log[name] = analyze_query(name, sql, schema, queries, error_log)
 
     # テーブル参照マトリクス用：SELECT出力カラムに寄与しない、JOIN/WHERE専用の
     # テーブル参照も拾うため、analyze_query()のlineageとは別経路で直接/間接の
-    # テーブル参照を求める（table_usage.py 参照）。結果はanalysis.jsonにもマージし、
-    # analysis_logを唯一の解析結果に保つ。
+    # テーブル参照を求める（table_usage.py 参照。クエリ名衝突警告もここで検出する）。
     usage, children = resolve_table_usage(queries, schema, error_log)
+
+    # analyze_query() が expand_query_ast + qualify を1回だけ実行し、analysis.json用の
+    # ログとlineage行を同じ結果から作る。lineage.xlsx は各クエリの "lineage" を
+    # build_lineage_dataframe() で連結して組み立てる（analysis_logが唯一の解析結果）。
+    analysis_log = {name: analyze_query(name, sql, schema, queries, error_log) for name, sql in queries.items()}
     for name, u in usage.items():
         analysis_log[name]["参照テーブル_直接"] = sorted(u["direct"])
         analysis_log[name]["参照テーブル_間接"] = sorted(u["indirect"])
