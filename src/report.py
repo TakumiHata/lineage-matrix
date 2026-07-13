@@ -46,12 +46,25 @@ def write_json(path: Path, data) -> None:
 
 def write_group_output(
     out_dir: Path,
+    df_matrix: pd.DataFrame,
     df_lineage: pd.DataFrame,
     analysis_log: dict,
     error_log: list[dict],
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    df_lineage.to_excel(out_dir / "lineage.xlsx", index=False)
+    # マトリックスとカラム単位の詳細行は同じ analysis_log から生成される2つのビューの
+    # ため、別ファイルにすると再生成のタイミングでズレうる。1つのブック内の別シートに
+    # まとめ、常に同時生成・同時配布されるようにする。
+    with pd.ExcelWriter(out_dir / "lineage.xlsx", engine="openpyxl") as writer:
+        df_matrix.to_excel(writer, sheet_name="テーブル参照マトリクス", index=False)
+        df_lineage.to_excel(writer, sheet_name="カラム単位リネージ", index=False)
+        # マトリクスの○/◎はPython側で確定させた値であり、Excel数式では再現しない
+        # （分析ロジックが2箇所に分かれてズレるのを避けるため）。その代わり、
+        # 詳細シートにオートフィルタを付け、開始クエリ・参照テーブルで絞り込んで
+        # ○/◎の根拠を人手で検証できるようにする。
+        detail_sheet = writer.sheets["カラム単位リネージ"]
+        detail_sheet.auto_filter.ref = detail_sheet.dimensions
+
     write_json(out_dir / "analysis.json", analysis_log)
     write_json(out_dir / "error.json", error_log)

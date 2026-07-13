@@ -5,6 +5,7 @@ import sqlglot.expressions as exp
 from sqlglot.lineage import build_scope, to_node
 from sqlglot.optimizer.qualify import qualify
 
+from casing import restore_query_casing, restore_schema_casing, restore_table_casing
 from config import DIALECT
 from sql_expand import expand_query_ast, qualify_expanded
 
@@ -50,38 +51,6 @@ def extract_select_columns(sql: str, schema: dict, dialect: str = DIALECT) -> li
         else:
             columns.append(sel.alias_or_name)
     return columns
-
-
-def _restore_casing(name: str | None, candidates) -> str | None:
-    # tsqlは大文字小文字を区別しないため、qualify()通過後の識別子はASCII部分が
-    # 小文字化されることがある（例: 工事ID → 工事id、クエリ工事CTE集計 → クエリ工事cte集計）。
-    # schema/queriesに登録された元の表記を候補群から探し、A5M2定義書等との
-    # Excel突合で一致させられるようにする。
-    if not name:
-        return name
-    for candidate in candidates:
-        if candidate.lower() == name.lower():
-            return candidate
-    return name
-
-
-def restore_table_casing(table_name: str | None, schema: dict) -> str | None:
-    return _restore_casing(table_name, schema)
-
-
-def restore_schema_casing(table_name: str | None, column_name: str | None, schema: dict) -> str | None:
-    # table_name も qualify() 通過後は小文字化されている可能性があるため、
-    # schema のキーとして使う前に本来の表記へ復元しておく必要がある
-    # （復元前のtable_nameのままだと schema に存在せず、常にcolumn_nameが
-    # 未復元のまま返ってしまう）。
-    table_name = restore_table_casing(table_name, schema)
-    if not table_name or table_name not in schema:
-        return column_name
-    return _restore_casing(column_name, schema[table_name])
-
-
-def restore_query_casing(reference_query: str, queries: dict[str, str]) -> str:
-    return _restore_casing(reference_query, queries)
 
 
 def leaf_row(

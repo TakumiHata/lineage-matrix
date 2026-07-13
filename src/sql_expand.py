@@ -50,6 +50,16 @@ def qualify_expanded(expanded: exp.Expression, schema: dict, dialect: str = DIAL
     return qualify(expanded, schema=schema, dialect=dialect, validate_qualify_columns=True, identify=False)
 
 
+def find_ci(name: str, candidates) -> str | None:
+    """candidates（イテラブル）の中から大文字小文字を無視してnameに一致する元の
+    表記を返す。見つからなければNone。table_usage.py のクエリ/テーブル分類でも使う。
+    """
+    for c in candidates:
+        if c.lower() == name.lower():
+            return c
+    return None
+
+
 def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict, dialect: str = DIALECT) -> list[str]:
     """このSQLのFROM/JOIN句で参照されている名前のうち、クエリ名とテーブル名の
     両方に一致するものを検出する。exp.expand() はクエリを優先して展開するため、
@@ -65,8 +75,6 @@ def find_query_table_collisions(sql: str, queries: dict[str, str], schema: dict,
     for t in parsed.find_all(exp.Table):
         if t.db:
             continue
-        is_query = any(q.lower() == t.name.lower() for q in queries)
-        is_table = any(tbl.lower() == t.name.lower() for tbl in schema)
-        if is_query and is_table:
+        if find_ci(t.name, queries) and find_ci(t.name, schema):
             warnings.append(f"'{t.name}' はクエリ名とテーブル名の両方に一致します。クエリとして展開されます。")
     return warnings

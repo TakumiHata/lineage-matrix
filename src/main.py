@@ -17,8 +17,10 @@ import sys
 from config import INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
 from lineage_extract import analyze_query
 from loader import load_queries, load_schema
+from matrix import build_matrix_dataframe, build_matrix_rows
 from report import build_lineage_dataframe, write_group_output
 from sql_expand import find_query_table_collisions
+from table_usage import resolve_table_usage
 
 
 def process_group(start_query: str, schema: dict) -> None:
@@ -47,13 +49,25 @@ def process_group(start_query: str, schema: dict) -> None:
         # build_lineage_dataframe() で連結して組み立てる（analysis_logが唯一の解析結果）。
         analysis_log[name] = analyze_query(name, sql, schema, queries, error_log)
 
+    # テーブル参照マトリクス用：SELECT出力カラムに寄与しない、JOIN/WHERE専用の
+    # テーブル参照も拾うため、analyze_query()のlineageとは別経路で直接/間接の
+    # テーブル参照を求める（table_usage.py 参照）。結果はanalysis.jsonにもマージし、
+    # analysis_logを唯一の解析結果に保つ。
+    usage, children = resolve_table_usage(queries, schema, error_log)
+    for name, u in usage.items():
+        analysis_log[name]["参照テーブル_直接"] = sorted(u["direct"])
+        analysis_log[name]["参照テーブル_間接"] = sorted(u["indirect"])
+
+    matrix_rows = build_matrix_rows(start_query, children, usage, error_log)
+    df_matrix = build_matrix_dataframe(matrix_rows, schema)
+
     df_lineage = build_lineage_dataframe(analysis_log)
 
     out_dir = OUTPUT_DIR / start_query
-    write_group_output(out_dir, df_lineage, analysis_log, error_log)
+    write_group_output(out_dir, df_matrix, df_lineage, analysis_log, error_log)
 
     print(f"[{start_query}] クエリ数={len(queries)}, 行数={len(df_lineage)}, エラー={len(error_log)} 件")
-    print(f"  -> {out_dir}/lineage.xlsx, analysis.json, error.json")
+    print(f"  -> {out_dir}/lineage.xlsx（テーブル参照マトリクス・カラム単位リネージ）, analysis.json, error.json")
 
 
 def main() -> None:
