@@ -42,6 +42,10 @@ def group_queries(queries: list[dict]) -> pd.DataFrame:
     """query.json形式のクエリ一覧（[{"クエリ名":..., "SQL":...}, ...]）を、
     normalize_sql()のWHERE前が完全一致するクエリ同士でグルーピングし、
     グループIDを付与したDataFrameを返す。
+
+    Accessのクエリは大文字小文字の表記が統一されていないことが多いため、
+    グルーピングの比較キーはWHERE前をcasefold()したものを使う（表示用の
+    "WHERE前"列自体は元の大文字小文字のまま残す）。
     """
     rows = []
     for q in queries:
@@ -49,21 +53,25 @@ def group_queries(queries: list[dict]) -> pd.DataFrame:
         rows.append({"クエリ名": q["クエリ名"], "SQL": q["SQL"], "WHERE前": before, "WHERE以降": after})
 
     df = pd.DataFrame(rows, columns=["クエリ名", "SQL", "WHERE前", "WHERE以降"])
-    # WHERE前が完全一致するクエリを同じグループに束ねる。出現順を保つためsort=False。
-    df["グループID"] = df.groupby("WHERE前", sort=False).ngroup() + 1
+    # 比較キーは大文字小文字を無視するcasefold()版。出現順を保つためsort=False。
+    grouping_key = df["WHERE前"].str.casefold()
+    df["グループID"] = df.groupby(grouping_key, sort=False).ngroup() + 1
     return df
 
 
 def check_similarity(group: pd.DataFrame, threshold: float = SIMILARITY_THRESHOLD) -> list[dict]:
     """同一グループ内の「WHERE以降」をdifflib.SequenceMatcherで総当たり比較し、
     類似度がthreshold未満のペアを検出して返す。
+
+    比較は大文字小文字を無視するcasefold()版で行う（表示用の"WHERE以降"の値自体は
+    元の大文字小文字のまま保持する）。
     """
     flagged = []
     rows = group[["クエリ名", "WHERE以降"]].to_dict("records")
     for i in range(len(rows)):
         for j in range(i + 1, len(rows)):
             a, b = rows[i], rows[j]
-            ratio = difflib.SequenceMatcher(None, a["WHERE以降"], b["WHERE以降"]).ratio()
+            ratio = difflib.SequenceMatcher(None, a["WHERE以降"].casefold(), b["WHERE以降"].casefold()).ratio()
             if ratio < threshold:
                 flagged.append({"クエリ名1": a["クエリ名"], "クエリ名2": b["クエリ名"], "類似度": round(ratio, 3)})
     return flagged
