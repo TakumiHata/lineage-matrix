@@ -5,6 +5,8 @@ from pathlib import Path
 INPUT_DIR = Path("input")
 OUTPUT_DIR = Path("output")
 TABLES_FILE = INPUT_DIR / "table.json"
+QUERIES_FILE = INPUT_DIR / "query.json"
+QUERY_GROUPS_FILE = OUTPUT_DIR / "query_groups.xlsx"
 
 # AI変換済みSQLはSQL Server用SQLのみを対象とするツールのため、方言は固定。
 DIALECT = "tsql"

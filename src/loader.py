@@ -19,6 +19,13 @@ def _load_json_with_encoding(path: Path) -> dict:
         raise ValueError(f"{path} をUTF-8として読み込めませんでした。入力ファイルはUTF-8で保存してください。") from e
 
 
+def load_raw_queries(path: Path) -> list[dict]:
+    """query.json（クエリ名・SQLのみの全クエリ一覧、呼び出し元関係なし）を読み込み、
+    [{"クエリ名": ..., "SQL": ...}, ...] の生のリストをそのまま返す。
+    """
+    return _load_json_with_encoding(path)
+
+
 def load_queries(path: Path) -> dict[str, str]:
     """chain_queries.json またはconverted_queries.json を読み込み、
     {クエリ名: SQL} の辞書を返す。
