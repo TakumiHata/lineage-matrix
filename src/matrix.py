@@ -46,34 +46,41 @@ def build_matrix_rows(
     return rows
 
 
-def build_matrix_dataframe(rows: list[dict], table_physical_names: dict[str, str]) -> pd.DataFrame:
-    """行リストをワイドDataFrameに変換する。階層列は「開始クエリ」に加え、
-    そのグループ内の最大ネスト数に応じて サブクエリ1, サブクエリ2, ... を動的に
-    追加する（report.build_lineage_dataframeの参照クエリ1,2,...と同じ考え方）。
-    行はルートからそのクエリまでのパンくず（外側→内側）を、path の深さに応じた
-    列まで埋める。
+def build_matrix_long_entries(rows: list[dict], table_physical_names: dict[str, str]) -> list[dict]:
+    """build_matrix_rows()の出力から、1行1テーブル参照の縦持ちレコード
+    （{"path": パンくずのリスト, "テーブル名": 物理テーブル名, "マーク": "○"/"◎"}）を組み立てる。
 
-    テーブルを全列挙する列群の代わりに「参照物理テーブル名」列1つにまとめる。
-    table_physical_names（loader.build_physical_table_name()で組み立てた
-    テーブル名→物理テーブル名の対応表）を使い、直接参照は「物理名(○)」、
-    間接参照は「物理名(◎)」の形式にしてカンマ区切りで連結する
-    （物理テーブル名が対応表に無い場合はテーブル名をそのまま使う）。
+    判定ロジック（direct/indirect）はここでは変更しない。列展開（開始クエリ・
+    サブクエリN...列への分割）もここでは行わない。複数の起点クエリを横断して
+    1つのCSVにまとめる際、列数はグループ横断の最大ネスト数に揃える必要があるため、
+    呼び出し側（build_matrix_long_dataframe()）でまとめて行う。
     """
-    max_depth = max((len(r["path"]) for r in rows), default=1)
+    entries: list[dict] = []
+    for r in rows:
+        for mark, tables in (("○", r["direct"]), ("◎", r["indirect"])):
+            for t in sorted(tables):
+                entries.append({"path": r["path"], "テーブル名": table_physical_names.get(t, t), "マーク": mark})
+    return entries
+
+
+def build_matrix_long_dataframe(entries: list[dict]) -> pd.DataFrame:
+    """build_matrix_long_entries()の出力（複数の起点クエリ分をまとめたものでもよい）を
+    縦持ちDataFrameに変換する。階層列は build_matrix_dataframe() と同様に
+    開始クエリ・サブクエリ1, サブクエリ2, ... を、渡されたentries全体の最大ネスト数に
+    応じて動的に追加する（複数起点クエリ分をまとめて1つのCSVに出力する際、
+    列数をグループ間で揃えるため）。
+    """
+    max_depth = max((len(e["path"]) for e in entries), default=1)
     level_columns = ["開始クエリ"] + [f"サブクエリ{i}" for i in range(1, max_depth)]
-    columns = [*level_columns, "参照物理テーブル名"]
+    columns = [*level_columns, "テーブル名", "マーク"]
 
     out_rows = []
-    for r in rows:
+    for e in entries:
         row = {col: "" for col in level_columns}
-        for i, name in enumerate(r["path"]):
+        for i, name in enumerate(e["path"]):
             row[level_columns[i]] = name
-
-        direct_names = sorted(table_physical_names.get(t, t) for t in r["direct"])
-        indirect_names = sorted(table_physical_names.get(t, t) for t in r["indirect"])
-        parts = [f"{name}(○)" for name in direct_names] + [f"{name}(◎)" for name in indirect_names]
-        row["参照物理テーブル名"] = ", ".join(parts)
-
+        row["テーブル名"] = e["テーブル名"]
+        row["マーク"] = e["マーク"]
         out_rows.append(row)
 
     return pd.DataFrame(out_rows, columns=columns)

@@ -1,7 +1,8 @@
 """table_reference_extract.py のテスト。
 
-AI変換前のchain_queries.json（Access/Jet-SQL）から直接、参照テーブル一覧を
-テーブル単位で抽出する軽量パスの検証。converted_queries.jsonは一切使わない。
+chain_queries.json（Access/Jet-SQL）から直接、参照テーブル一覧をテーブル単位で
+抽出する処理の検証。lineage-matrix唯一の解析経路であり、main.py（マトリックス表
+構築）もこのモジュールのclassify_queries()を共有する。
 """
 
 import json
@@ -129,6 +130,38 @@ def test_extract_parse_failure_recorded_without_raising():
 def test_extract_case_insensitive_matching_against_known_tables():
     result = tre.extract_referenced_tables("SELECT * FROM t_受注明細", {"T_受注明細"}, set())
     assert result["参照テーブル"] == ["T_受注明細"]
+
+
+# ---------------------------------------------------------------------------
+# classify_queries: queries全体へのextract_referenced_tables()の一括適用
+# （main.pyのマトリックス構築とmain()のtable_references.json出力が共有するヘルパー）
+# ---------------------------------------------------------------------------
+
+
+def test_classify_queries_returns_one_entry_per_query():
+    known_tables = {"T_受注明細"}
+    queries = {
+        "クエリ基本": "SELECT * FROM T_受注明細",
+        "クエリ集計": "SELECT * FROM クエリ基本",
+    }
+    classified = tre.classify_queries(queries, known_tables)
+
+    assert set(classified.keys()) == {"クエリ基本", "クエリ集計"}
+    assert classified["クエリ基本"]["参照テーブル"] == ["T_受注明細"]
+    assert classified["クエリ集計"]["参照サブクエリ"] == ["クエリ基本"]
+
+
+def test_classify_queries_known_queries_scoped_to_this_group_only():
+    """known_queriesはqueries自身のキー（そのグループ内の登録済みクエリ名）のみを
+    使う。他グループのクエリ名と偶然一致しても、渡されたqueriesに含まれなければ
+    サブクエリとして解決されない（未解決になる）。
+    """
+    known_tables = {"T"}
+    queries = {"クエリX": "SELECT * FROM クエリ他グループ限定"}
+    classified = tre.classify_queries(queries, known_tables)
+
+    assert classified["クエリX"]["未解決"] == ["クエリ他グループ限定"]
+    assert classified["クエリX"]["参照サブクエリ"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +307,8 @@ def test_pattern_a_and_d_end_to_end_via_main(workdir):
 # ---------------------------------------------------------------------------
 
 
-def test_main_uses_chain_queries_json_even_when_converted_queries_json_present(workdir):
-    """converted_queries.jsonの有無を問わず、必ずchain_queries.jsonのAccess SQLを使う。"""
+def test_main_uses_chain_queries_json(workdir):
+    """chain_queries.jsonのAccess SQLを使ってテーブル参照を抽出する。"""
     start = "クエリN"
     d = workdir / "input" / start
     d.mkdir(parents=True)
@@ -283,8 +316,6 @@ def test_main_uses_chain_queries_json_even_when_converted_queries_json_present(w
         d / "chain_queries.json",
         [{"クエリ名": "クエリN", "SQL": "SELECT * FROM T_受注明細", "呼び出し元": []}],
     )
-    # converted_queries.json が存在しても無視され、chain_queries.jsonのSQLが使われる
-    write_json(d / "converted_queries.json", [{"クエリ名": "クエリN", "SQL": "SELECT * FROM T_別テーブル"}])
     write_json(workdir / "input" / "table.json", [{"テーブル名": "T_受注明細", "カラム": [{"名前": "a", "型": "int"}]}])
 
     tre.main()
@@ -294,20 +325,28 @@ def test_main_uses_chain_queries_json_even_when_converted_queries_json_present(w
     assert entry["参照テーブル"] == ["T_受注明細"]
 
 
-def test_main_skips_folder_without_chain_queries_json(workdir, capsys):
-    """converted_queries.jsonしか無いフォルダはchain_queries.jsonが無いためスキップされる。"""
+def test_main_ignores_folder_without_chain_queries_json(workdir):
+    """chain_queries.jsonが存在しないフォルダはdiscover_start_queries()の時点で
+    検出対象から外れるため、出力に一切現れない。
+    """
     start = "クエリO"
-    d = workdir / "input" / start
-    d.mkdir(parents=True)
-    write_json(d / "converted_queries.json", [{"クエリ名": "クエリO", "SQL": "SELECT * FROM T_受注明細"}])
+    (workdir / "input" / start).mkdir(parents=True)
     write_json(workdir / "input" / "table.json", [{"テーブル名": "T_受注明細", "カラム": [{"名前": "a", "型": "int"}]}])
 
     tre.main()
 
-    captured = capsys.readouterr()
-    assert "見つかりません" in captured.out
     out = json.loads((workdir / "output" / "table_references.json").read_text(encoding="utf-8"))
     assert all(e["クエリ名"] != "クエリO" for e in out)
+
+
+def test_main_empty_output_when_no_start_queries_found(workdir):
+    """起点クエリが1件も見つからない場合でもクラッシュせず、空配列を出力する。"""
+    write_json(workdir / "input" / "table.json", [])
+
+    tre.main()
+
+    out = json.loads((workdir / "output" / "table_references.json").read_text(encoding="utf-8"))
+    assert out == []
 
 
 def test_main_outputs_all_expected_fields_per_query(workdir):

@@ -1,14 +1,14 @@
-"""AI変換／SSMA変換を経由せず、chain_queries.json のAccess SQL（Jet-SQL）から
-直接、クエリが参照するテーブルの一覧をテーブル単位で抽出する軽量パス。
+"""chain_queries.json のAccess SQL（Jet-SQL）から直接、クエリが参照するテーブルの
+一覧をテーブル単位で抽出するモジュール。lineage-matrix唯一の解析経路であり、
+main.py（マトリックス表の構築）と table_reference_extract.main()（後述の
+table_references.json単体出力）の両方がここを共通で使う。
 
 マトリックス表に必要なのは「クエリ内での参照テーブル情報」（テーブル単位のみ、
 カラム単位は不要）であり、テーブル参照の抽出だけであればsqlglotは関数の意味を
-理解する必要がなく構文的にパースできればよいため、AI変換（ボトルネック）や
-SSMA（Format関数・パラメータクエリ・クロスタブクエリを変換できない）を経由せず、
-Jet-SQL特有構文だけを前処理で除去してtsql方言でパースする。
-
-カラム単位の詳細なリネージ（lineage_extract.py が行う出力位置ベースの解決等）は
-対象外。converted_queries.json は使わず、常に chain_queries.json を使う。
+理解する必要がなく構文的にパースできればよいため、AI変換・SSMA変換を一切経由せず、
+Jet-SQL特有構文だけを前処理で除去してtsql方言でパースする
+（AI変換はボトルネックであり、SSMAはFormat関数・パラメータクエリ・
+クロスタブクエリを変換できないため）。
 """
 
 import json
@@ -17,8 +17,8 @@ import re
 import sqlglot
 import sqlglot.expressions as exp
 
-from config import INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
-from loader import load_queries, load_schema
+from config import DIALECT, INPUT_DIR, OUTPUT_DIR, discover_start_queries
+from loader import load_queries, load_table_info
 
 _PARAMETERS_RE = re.compile(r"^\s*PARAMETERS\b.*?;\s*", re.IGNORECASE | re.DOTALL)
 _TRANSFORM_RE = re.compile(r"\bTRANSFORM\b\s+.*?\s+(?=SELECT\b)", re.IGNORECASE | re.DOTALL)
@@ -51,7 +51,7 @@ def _find_ci(name: str, candidates) -> str | None:
 
 
 def extract_referenced_tables(sql: str, known_tables: set[str], known_queries: set[str]) -> dict:
-    """SQL（AI変換前のJet-SQL）が参照するテーブル・サブクエリを分類して返す。
+    """SQL（Jet-SQL）が参照するテーブル・サブクエリを分類して返す。
 
     known_tables に一致すれば「参照テーブル」、known_queries に一致すれば
     「参照サブクエリ」（VBA側のチェーン検出で既に捕捉されている想定のため、
@@ -61,7 +61,7 @@ def extract_referenced_tables(sql: str, known_tables: set[str], known_queries: s
     """
     normalized = normalize_jet_sql(sql)
     try:
-        parsed = sqlglot.parse_one(normalized, read="tsql")
+        parsed = sqlglot.parse_one(normalized, read=DIALECT)
     except Exception:
         return {"参照テーブル": [], "参照サブクエリ": [], "未解決": [], "パース失敗": True}
 
@@ -88,9 +88,18 @@ def extract_referenced_tables(sql: str, known_tables: set[str], known_queries: s
     }
 
 
+def classify_queries(queries: dict[str, str], known_tables: set[str]) -> dict[str, dict]:
+    """queries内の全クエリについて extract_referenced_tables() を実行し、
+    {クエリ名: 分類結果} を返す。known_queries はこのグループ内の登録済み
+    クエリ名一覧（queries自身のキー）を使う。main.py（マトリックス構築）と
+    main()（table_references.json出力）の両方がこのヘルパーを共有する。
+    """
+    known_queries = set(queries.keys())
+    return {name: extract_referenced_tables(sql, known_tables, known_queries) for name, sql in queries.items()}
+
+
 def main() -> None:
-    schema = load_schema(TABLES_FILE)
-    known_tables = set(schema.keys())
+    known_tables = set(load_table_info().keys())
 
     start_queries = discover_start_queries()
     results: list[dict] = []
@@ -101,9 +110,8 @@ def main() -> None:
             continue
 
         queries = load_queries(chain_path)
-        known_queries = set(queries.keys())
-        for name, sql in queries.items():
-            entry = extract_referenced_tables(sql, known_tables, known_queries)
+        classified = classify_queries(queries, known_tables)
+        for name, entry in classified.items():
             results.append({"クエリ名": name, **entry})
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

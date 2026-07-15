@@ -6,18 +6,22 @@ G（代表クエリ・重複チェーン除外）は現在のsrc/に対応する
 一切存在しない（representative_queries.json/skipped_queries.json関連の
 コードもgit履歴も見つからない）ため、テストを書かず本ファイル末尾のコメントで
 その旨を記録するに留める。
+
+lineage-matrixは「クエリ内の参照テーブル収集ツール」に特化する方針転換により、
+カラム単位のリネージ解析（旧・観点C）とAI変換済みSQLの事前検証（旧・観点B、
+validate.py）は撤去された。それに伴い、観点B・Cは
+「テーブル参照抽出とグラフ伝播」（table_reference_extract.py / table_usage.py）に
+割り当て直している。
 """
 
 import json
 
 import config
-import lineage_extract
 import loader
 import main
 import matrix
-import report
+import table_reference_extract
 import table_usage
-import validate
 
 
 def write_json(path, data):
@@ -25,74 +29,28 @@ def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def resolve_usage_from_queries(
+    queries: dict[str, str], known_tables: set[str], error_log: list[dict] | None = None
+) -> tuple[dict[str, dict[str, set[str]]], dict[str, set[str]]]:
+    """テストヘルパー：main.process_group()と同じ経路（classify_queries() →
+    resolve_table_usage()）でSQL文字列からusage/childrenを求める。
+    """
+    if error_log is None:
+        error_log = []
+    classified = table_reference_extract.classify_queries(queries, known_tables)
+    direct = {name: set(e["参照テーブル"]) for name, e in classified.items()}
+    children = {name: set(e["参照サブクエリ"]) for name, e in classified.items()}
+    usage = table_usage.resolve_table_usage(direct, children, error_log)
+    return usage, children
+
+
 # ---------------------------------------------------------------------------
 # A. 入力読み込み（loader.py / config.py）
 # ---------------------------------------------------------------------------
 
 
-def test_a1_table_json_parsing(tmp_path):
-    """A1: table.jsonの読み込み（種別/接続先/物理名/カラム型）。"""
-    table_json = [
-        {
-            "テーブル名": "工事台帳",
-            "種別": "ローカルテーブル",
-            "接続先": "",
-            "物理名": "T_工事台帳",
-            "カラム": [
-                {"名前": "工事ID", "型": "int"},
-                {"名前": "工事名称", "型": "varchar"},
-            ],
-        },
-        {
-            "テーブル名": "機関マスタ",
-            "種別": "リンクテーブル",
-            "接続先": "C:\\DB\\a.accdb",
-            "物理名": "機関マスタ",
-            "カラム": [
-                {"名前": "機関コード"},  # 型省略 -> "text"
-            ],
-        },
-    ]
-    path = tmp_path / "table.json"
-    write_json(path, table_json)
-
-    schema = loader.load_schema(path)
-
-    assert schema == {
-        "工事台帳": {"工事ID": "int", "工事名称": "varchar"},
-        "機関マスタ": {"機関コード": "text"},
-    }
-    # 種別・接続先・物理名は load_schema() のdocstring通り、スキーマ辞書には含まれない
-    # （読み込み自体はできるが、パイプラインの他のどこにも保持されず捨てられる）
-
-
-def test_a1_table_json_parsing_ignores_schema_fields(tmp_path):
-    """A1続き: table.jsonに スキーマ／スキーマ取得方法 フィールドが含まれていても
-    load_schema() の返すスキーマ辞書には影響しない（load_table_info()側で扱う）。
-    """
-    table_json = [
-        {
-            "テーブル名": "工事台帳",
-            "物理名": "T_工事台帳",
-            "スキーマ": "PO",
-            "スキーマ取得方法": "ODBCリンクテーブル定義から自動取得",
-            "カラム": [{"名前": "工事ID", "型": "int"}],
-        }
-    ]
-    path = tmp_path / "table.json"
-    write_json(path, table_json)
-
-    schema = loader.load_schema(path)
-
-    assert schema == {"工事台帳": {"工事ID": "int"}}
-
-
-def test_a2_chain_queries_format_is_generically_loadable(tmp_path):
-    """A2: chain_queries.json形式（呼び出し元付き）のクエリ名・SQLパース。
-
-    ※ 注記: load_queries() 自体はファイル名に依存せず動く汎用関数のため
-    chain_queries.json形式でも問題なく読める。
-    """
+def test_a2_chain_queries_format_is_loadable(tmp_path):
+    """A2: chain_queries.json形式（呼び出し元付き）のクエリ名・SQLパース。"""
     data = [
         {"クエリ名": "クエリ工事基本", "SQL": "SELECT [a] FROM [dbo].[T]", "呼び出し元": []},
         {"クエリ名": "クエリ工事集計", "SQL": "SELECT [a] FROM クエリ工事基本", "呼び出し元": ["クエリ工事基本"]},
@@ -108,64 +66,25 @@ def test_a2_chain_queries_format_is_generically_loadable(tmp_path):
     }
 
 
-def test_a3_converted_queries_used_when_present(workdir):
-    """A3: converted_queries.jsonが存在する場合、それが解析に使われる。"""
-    start = "クエリI"
-    d = workdir / "input" / start
-    d.mkdir(parents=True)
-    write_json(d / "converted_queries.json", [{"クエリ名": "クエリI", "SQL": "SELECT [a] FROM [dbo].[T]"}])
-    schema = {"T": {"a": "int", "b": "int"}}
-
-    main.process_group(start, schema, {})
-
-    analysis = json.loads((workdir / "output" / start / "analysis.json").read_text(encoding="utf-8"))
-    assert analysis["クエリI"]["extract_select_columns"] == ["a"]
-
-
-def test_a3_converted_queries_takes_priority_over_chain_queries(workdir):
-    """A3続き: converted_queries.jsonとchain_queries.jsonが両方存在する場合、
-    converted_queries.jsonの内容が使われ、chain_queries.jsonは使われない。
-    """
-    start = "クエリJ"
-    d = workdir / "input" / start
-    d.mkdir(parents=True)
-    write_json(d / "converted_queries.json", [{"クエリ名": "クエリJ", "SQL": "SELECT [a] FROM [dbo].[T]"}])
-    write_json(d / "chain_queries.json", [{"クエリ名": "クエリJ", "SQL": "SELECT [b] FROM [dbo].[T]", "呼び出し元": []}])
-    schema = {"T": {"a": "int", "b": "int"}}
-
-    main.process_group(start, schema, {})
-
-    analysis = json.loads((workdir / "output" / start / "analysis.json").read_text(encoding="utf-8"))
-    # converted_queries.json の "a" が使われ、chain_queries.json の "b" は使われない
-    assert analysis["クエリJ"]["extract_select_columns"] == ["a"]
-
-
-def test_a4_chain_queries_used_as_fallback_when_converted_missing(workdir):
-    """A4: converted_queries.jsonが存在せずchain_queries.jsonのみの場合、
-    chain_queries.json（VBA出力・AI変換前）がフォールバックとして使われ、
-    リネージ解析が実行される。
-    """
+def test_a3_chain_queries_used_for_processing(workdir):
+    """A3: chain_queries.jsonが解析に使われる。"""
     start = "クエリK"
     d = workdir / "input" / start
     d.mkdir(parents=True)
-    write_json(d / "chain_queries.json", [{"クエリ名": "クエリK", "SQL": "SELECT [a] FROM [dbo].[T]", "呼び出し元": []}])
-    schema = {"T": {"a": "int"}}
+    write_json(d / "chain_queries.json", [{"クエリ名": "クエリK", "SQL": "SELECT [a] FROM T", "呼び出し元": []}])
 
-    main.process_group(start, schema, {})
+    main.process_group(start, {"T"}, {})
 
-    analysis = json.loads((workdir / "output" / start / "analysis.json").read_text(encoding="utf-8"))
-    assert analysis["クエリK"]["extract_select_columns"] == ["a"]
+    df = matrix_long_from_output(workdir, start)
+    assert df.iloc[0]["テーブル名"] == "T"
 
 
-def test_a4_skip_when_neither_chain_queries_nor_converted_exists(workdir, capsys):
-    """A4続き: chain_queries.json・converted_queries.jsonのどちらも存在しない場合は
-    エラーメッセージを出して当該フォルダをスキップする。
-    """
+def test_a4_skip_when_chain_queries_missing(workdir, capsys):
+    """A4: chain_queries.jsonが存在しない場合はエラーメッセージを出して当該フォルダをスキップする。"""
     start = "クエリZ"
     (workdir / "input" / start).mkdir(parents=True)
-    schema = {"T": {"a": "int"}}
 
-    main.process_group(start, schema, {})
+    main.process_group(start, {"T"}, {})
 
     captured = capsys.readouterr()
     assert "見つかりません" in captured.out
@@ -186,17 +105,12 @@ def test_a5_bom_and_no_bom_utf8(tmp_path):
     assert loader.load_queries(p_nobom) == {"Q": "SELECT 1 AS a"}
 
 
-def test_a6_discover_start_queries_under_input_dir(workdir):
-    """A6: 起点クエリ検出。input/ 直下のサブフォルダのうち、
-    chain_queries.json またはconverted_queries.jsonが存在するものだけが対象になる。
-    AI変換前の chain_queries.json のみのフォルダも対象に含まれる
-    （従来の「converted_queries.jsonが存在するフォルダのみ対象」という制約は緩和された）。
+def test_a6_discover_start_queries_requires_chain_queries_json(workdir):
+    """A6: 起点クエリ検出。input/ 直下のサブフォルダのうち、chain_queries.jsonが
+    存在するものだけが対象になる（converted_queries.json関連の優先読み込みは撤去済み）。
     """
     (workdir / "input" / "クエリA").mkdir(parents=True)
-    write_json(workdir / "input" / "クエリA" / "converted_queries.json", [])
-
-    (workdir / "input" / "クエリB").mkdir(parents=True)
-    write_json(workdir / "input" / "クエリB" / "chain_queries.json", [])  # AI変換前のみ
+    write_json(workdir / "input" / "クエリA" / "chain_queries.json", [])
 
     (workdir / "input" / "空フォルダ").mkdir(parents=True)
 
@@ -205,365 +119,128 @@ def test_a6_discover_start_queries_under_input_dir(workdir):
 
     result = config.discover_start_queries()
 
-    assert result == ["クエリA", "クエリB"]
+    assert result == ["クエリA"]
 
 
 # ---------------------------------------------------------------------------
-# B. AI変換済みSQLの事前検証（validate.py）
+# B. テーブル参照抽出とグラフ伝播
+# （table_reference_extract.classify_queries / table_usage.resolve_table_usage）
+#
+# extract_referenced_tables()・normalize_jet_sql() 自体の詳細な観点は
+# tests/test_table_reference_extract.py でカバーする。ここでは classify_queries()
+# の出力が table_usage.resolve_table_usage() の入力として正しく機能することを確認する。
 # ---------------------------------------------------------------------------
 
 
-def test_b7_valid_sql_passes():
-    """B7: 正常なSQLがエラーなく通過する。"""
-    schema = {"T": {"a": "int", "b": "int"}}
-    sql = "SELECT [a], [b] FROM [dbo].[T]"
-    result = validate.validate_query("Q", sql, {"Q": sql}, schema)
-    assert result["判定"] == "OK"
-    assert result["問題"] == []
-
-
-def test_b8_syntax_error_detected():
-    """B8: 構文エラーを含むSQLが検知される。"""
-    schema = {"T": {"a": "int"}}
-    sql = "SELEC [a] FROM [dbo].[T]"  # SELECTのタイポ
-    result = validate.validate_query("Q", sql, {"Q": sql}, schema)
-    assert result["判定"] == "NG"
-    assert any(p["種別"] == "構文エラー" for p in result["問題"])
-
-
-def test_b9_multiple_statements_detected():
-    """B9: 1ファイルに複数ステートメントが混入している場合の検知。"""
-    schema = {"T": {"a": "int"}}
-    sql = "SELECT [a] FROM [dbo].[T]; SELECT [a] FROM [dbo].[T]"
-    result = validate.validate_query("Q", sql, {"Q": sql}, schema)
-    assert result["判定"] == "NG"
-    assert any(p["種別"] == "複数ステートメント" for p in result["問題"])
-
-
-def test_b10_unconverted_access_function_detected():
-    """B10: Access固有関数（未変換）が残存している場合の検知。"""
-    schema = {"T": {"a": "int"}}
-    sql = "SELECT Nz([a], 0) AS a FROM [dbo].[T]"
-    result = validate.validate_query("Q", sql, {"Q": sql}, schema)
-    assert result["判定"] == "NG"
-    assert any(p["種別"] == "未知の関数" and "Nz" in p["メッセージ"] for p in result["問題"])
-
-
-def test_b11_schema_mismatch_detected_unknown_column():
-    """B11: 存在しないカラムを参照した場合のスキーマ不整合検知。"""
-    schema = {"T": {"a": "int"}}
-    sql = "SELECT [nonexistent_col] FROM [dbo].[T]"
-    result = validate.validate_query("Q", sql, {"Q": sql}, schema)
-    assert result["判定"] == "NG"
-    assert any(p["種別"] == "スキーマ不整合" for p in result["問題"])
-
-
-def test_b11_schema_mismatch_detected_unknown_table():
-    """B11続き: 存在しないテーブルを参照した場合のスキーマ不整合検知。"""
-    schema = {"T": {"a": "int"}}
-    sql = "SELECT [a] FROM [dbo].[NonExistentTable]"
-    result = validate.validate_query("Q", sql, {"Q": sql}, schema)
-    assert result["判定"] == "NG"
-    assert any(p["種別"] == "スキーマ不整合" for p in result["問題"])
-
-
-# ---------------------------------------------------------------------------
-# C. リネージ解析（lineage_extract.py / sql_expand.py）
-# ---------------------------------------------------------------------------
-
-
-def test_c12_single_table_reference():
-    """C12: 単一テーブル参照クエリでテーブル・カラムの由来が解決される。"""
-    schema = {"T": {"a": "int", "b": "int"}}
-    sql = "SELECT [a], [b] FROM [dbo].[T]"
-    entry = lineage_extract.analyze_query("Q", sql, schema, {"Q": sql}, [])
-    rows = {r["最終出力カラム"]: r for r in entry["lineage"]}
-    assert rows["a"]["参照テーブル"] == "T"
-    assert rows["a"]["参照カラム"] == "a"
-    assert rows["b"]["参照テーブル"] == "T"
-    assert rows["b"]["参照カラム"] == "b"
-
-
-def test_c13_unqualified_column_single_candidate():
-    """C13: 未修飾カラムで単一候補の場合の正しい解決。"""
-    schema = {"T": {"a": "int"}}
-    sql = "SELECT a FROM [dbo].[T]"
-    entry = lineage_extract.analyze_query("Q", sql, schema, {"Q": sql}, [])
-    row = entry["lineage"][0]
-    assert row["参照テーブル"] == "T"
-    assert row["参照カラム"] == "a"
-
-
-def test_c14_ambiguous_unqualified_column_raises_error_not_silent_unknown():
-    """C14: 未修飾カラムが複数JOIN先に同名で存在する場合、無警告で「不明」に
-    ならず例外・エラーログとして検知される（validate_qualify_columns=True）。
+def test_b_classify_queries_output_feeds_resolve_table_usage_directly():
+    """B: classify_queries()の「参照テーブル」「参照サブクエリ」が、そのまま
+    resolve_table_usage()のdirect/children入力として使え、間接参照が正しく積み上がる。
     """
-    schema = {
-        "T1": {"id": "int", "name": "varchar"},
-        "T2": {"id": "int", "name": "varchar"},
-    }
-    sql = "SELECT name FROM [dbo].[T1] JOIN [dbo].[T2] ON [dbo].[T1].[id] = [dbo].[T2].[id]"
-    error_log = []
-    entry = lineage_extract.analyze_query("Q", sql, schema, {"Q": sql}, error_log)
-
-    assert any(e["種別"] == "expand_sql失敗" and e["クエリ"] == "Q" for e in error_log)
-    # 無警告で「不明」に落ちるのではなく、"解析失敗"経路の行になる
-    assert entry["lineage"][0]["参照クエリパス"] == ["解析失敗"]
-    assert entry["lineage"][0]["参照テーブル"] == "不明"
-
-
-def test_c15_duplicate_output_column_names_resolved_by_position():
-    """C15: 同名カラムが複数存在するクエリで位置ベースに区別して解決される。"""
-    schema = {
-        "T1": {"id": "int", "name": "varchar"},
-        "T2": {"id": "int", "name": "varchar"},
-    }
-    sql = (
-        "SELECT [dbo].[T1].[name], [dbo].[T2].[name] "
-        "FROM [dbo].[T1] JOIN [dbo].[T2] ON [dbo].[T1].[id] = [dbo].[T2].[id]"
-    )
-    entry = lineage_extract.analyze_query("Q", sql, schema, {"Q": sql}, [])
-    assert entry["lineage"][0]["参照テーブル"] == "T1"
-    assert entry["lineage"][1]["参照テーブル"] == "T2"
-
-
-def test_c16_one_level_subquery():
-    """C16: 1階層のサブクエリで参照テーブル・カラムが正しく追跡される。"""
-    schema = {"T": {"a": "int"}}
-    sql = "SELECT [x].[a] FROM (SELECT [a] FROM [dbo].[T]) AS [x]"
-    entry = lineage_extract.analyze_query("Q", sql, schema, {"Q": sql}, [])
-    row = entry["lineage"][0]
-    assert row["参照テーブル"] == "T"
-    assert row["参照カラム"] == "a"
-
-
-def test_c17_nested_two_level_registered_query_chain():
-    """C17: 2階層以上ネストした（登録済み）クエリ参照を再帰的に追跡する。"""
-    schema = {"T": {"a": "int"}}
+    known_tables = {"T"}
     queries = {
-        "Base": "SELECT [a] FROM [dbo].[T]",
+        "Base": "SELECT [a] FROM T",
         "Mid": "SELECT [a] FROM Base",
         "Main": "SELECT [a] FROM Mid",
     }
-    entry = lineage_extract.analyze_query("Main", queries["Main"], schema, queries, [])
-    row = entry["lineage"][0]
-    assert row["参照テーブル"] == "T"
-    assert row["参照カラム"] == "a"
-    assert row["参照クエリパス"] == ["Mid", "Base"]
-
-
-def test_c18_intermediate_query_direct_usage_excludes_descendant_tables():
-    """C18: 中間クエリの「直接参照」は自分自身のSQLが触れるものだけに限られ、
-    子孫クエリ経由の間接的なテーブル参照は「間接」側にのみ計上される。
-    ○/◎の判定ロジック自体（table_usage.resolve_table_usage）は出力形式変更の
-    影響を受けず、従来通りの結果を返す（マトリックス表の出力形式変更に対する回帰確認）。
-    """
-    schema = {"T": {"a": "int"}}
-    queries = {
-        "Base": "SELECT [a] FROM [dbo].[T]",
-        "Mid": "SELECT [a] FROM Base",
-        "Main": "SELECT [a] FROM Mid",
-    }
-    usage, children = table_usage.resolve_table_usage(queries, schema, [])
+    usage, children = resolve_usage_from_queries(queries, known_tables)
 
     assert usage["Base"] == {"direct": {"T"}, "indirect": set()}
-    # Mid は自分のSQL上ではBase（クエリ）しか参照していないため直接テーブル参照は空
     assert usage["Mid"] == {"direct": set(), "indirect": {"T"}}
     assert usage["Main"] == {"direct": set(), "indirect": {"T"}}
     assert children == {"Base": set(), "Mid": {"Base"}, "Main": {"Mid"}}
 
 
-def test_c19_ascii_identifier_casing_restored():
-    """C19: ASCII識別子で、qualify()による小文字化後も元の大文字小文字が復元される。"""
-    schema = {"OrderTable": {"OrderID": "int", "OrderName": "varchar"}}
-    sql = "SELECT [OrderID], [OrderName] FROM [dbo].[OrderTable]"
-    entry = lineage_extract.analyze_query("Q", sql, schema, {"Q": sql}, [])
-    rows = {r["最終出力カラム"]: r for r in entry["lineage"]}
-    assert rows["OrderID"]["参照テーブル"] == "OrderTable"
-    assert rows["OrderID"]["参照カラム"] == "OrderID"
-    assert rows["OrderName"]["参照テーブル"] == "OrderTable"
-    assert rows["OrderName"]["参照カラム"] == "OrderName"
-
-
-# ---------------------------------------------------------------------------
-# D. レポート出力（report.py）
-# ---------------------------------------------------------------------------
-
-
-def test_d20_lineage_dataframe_column_layout():
-    """D20: lineage.xlsx（カラム単位リネージ）の列構成。
-
-    ※ 注記: 実装（およびREADMEの仕様表）での列順は
-    開始クエリ／最終出力カラム／参照クエリ1.../参照テーブル／参照カラム であり、
-    「最終出力カラム」は2列目に来る。
+def test_b_resolve_table_usage_pure_graph_propagation_no_sql_parsing():
+    """B: resolve_table_usage()は事前に計算されたdirect/childrenのみを使う
+    純粋なグラフ伝播であり、SQL文字列やスキーマを一切必要としない。
     """
-    schema = {"T": {"a": "int"}}
-    queries = {
-        "Base": "SELECT [a] FROM [dbo].[T]",
-        "Main": "SELECT [a] FROM Base",
-    }
-    analysis_log = {
-        name: lineage_extract.analyze_query(name, sql, schema, queries, [])
-        for name, sql in queries.items()
-    }
-    df = report.build_lineage_dataframe(analysis_log)
+    direct = {"Base": {"T"}, "Mid": set(), "Main": set()}
+    children = {"Base": set(), "Mid": {"Base"}, "Main": {"Mid"}}
 
-    assert list(df.columns) == ["開始クエリ", "最終出力カラム", "参照クエリ1", "参照テーブル", "参照カラム"]
+    usage = table_usage.resolve_table_usage(direct, children, [])
+
+    assert usage["Base"] == {"direct": {"T"}, "indirect": set()}
+    assert usage["Mid"] == {"direct": set(), "indirect": {"T"}}
+    assert usage["Main"] == {"direct": set(), "indirect": {"T"}}
 
 
-def test_d21_error_json_records_failures(workdir):
-    """D21: 解析失敗・不明行がある場合、error.jsonに正しく記録される。"""
+def test_b_circular_reference_detected_and_logged():
+    """B: クエリ呼び出しグラフに循環がある場合、無限再帰にならず error_log に
+    「循環参照警告」を記録したうえで、その経路の探索だけを打ち切る。
+    """
+    direct = {"A": set(), "B": set()}
+    children = {"A": {"B"}, "B": {"A"}}
+    error_log: list[dict] = []
+
+    usage = table_usage.resolve_table_usage(direct, children, error_log)
+
+    assert any(e["種別"] == "循環参照警告" for e in error_log)
+    assert usage["A"]["indirect"] == set()
+    assert usage["B"]["indirect"] == set()
+
+
+# ---------------------------------------------------------------------------
+# D. エラーログ（output/<起点クエリ名>/error.json）
+# ---------------------------------------------------------------------------
+
+
+def test_d_error_json_records_unresolved_table_reference(workdir):
+    """D: テーブル・登録済みクエリのいずれにも一致しない参照がある場合、
+    error.jsonに「未解決テーブル参照」として記録される（他のクエリの処理は継続する）。
+    """
     start = "クエリL"
     d = workdir / "input" / start
     d.mkdir(parents=True)
-    write_json(
-        d / "converted_queries.json",
-        [{"クエリ名": "クエリL", "SQL": "SELECT [nonexistent_col] FROM [dbo].[T]"}],
-    )
-    schema = {"T": {"a": "int"}}
+    write_json(d / "chain_queries.json", [{"クエリ名": "クエリL", "SQL": "SELECT * FROM 存在しないテーブル", "呼び出し元": []}])
 
-    main.process_group(start, schema, {})
+    main.process_group(start, {"T"}, {})
 
     error_log = json.loads((workdir / "output" / start / "error.json").read_text(encoding="utf-8"))
-    assert len(error_log) >= 1
-    assert any(e["種別"] == "expand_sql失敗" and e["クエリ"] == "クエリL" for e in error_log)
-
-    lineage_rows = json.loads((workdir / "output" / start / "analysis.json").read_text(encoding="utf-8"))
-    assert lineage_rows["クエリL"]["lineage"][0]["参照テーブル"] == "不明"
+    assert any(e["種別"] == "未解決テーブル参照" and e["クエリ"] == "クエリL" for e in error_log)
 
 
-def test_d22_analysis_json_complete_when_zero_failures(workdir):
-    """D22: 解析失敗・不明行がゼロのケースで、analysis.jsonに全件正しく出力される。"""
+def test_d_error_json_records_parse_failure(workdir):
+    """D: 前処理後もsqlglotでパースできないSQLがある場合、error.jsonに
+    「パース失敗」として記録され、処理全体は継続する。
+    """
+    start = "クエリN"
+    d = workdir / "input" / start
+    d.mkdir(parents=True)
+    write_json(d / "chain_queries.json", [{"クエリ名": "クエリN", "SQL": "SELECT FROM WHERE (", "呼び出し元": []}])
+
+    main.process_group(start, {"T"}, {})
+
+    error_log = json.loads((workdir / "output" / start / "error.json").read_text(encoding="utf-8"))
+    assert any(e["種別"] == "パース失敗" and e["クエリ"] == "クエリN" for e in error_log)
+
+
+def test_d_error_json_empty_when_no_problems(workdir):
+    """D: 問題がゼロのケースで、error.jsonは空配列になる。"""
     start = "クエリM"
     d = workdir / "input" / start
     d.mkdir(parents=True)
     write_json(
-        d / "converted_queries.json",
+        d / "chain_queries.json",
         [
-            {"クエリ名": "クエリ基本", "SQL": "SELECT A.[a], A.[b] FROM [dbo].[T] A"},
-            {"クエリ名": "クエリM", "SQL": "SELECT [a], [b] FROM クエリ基本"},
+            {"クエリ名": "クエリ基本", "SQL": "SELECT [a] FROM T", "呼び出し元": []},
+            {"クエリ名": "クエリM", "SQL": "SELECT [a] FROM クエリ基本", "呼び出し元": ["クエリ基本"]},
         ],
     )
-    schema = {"T": {"a": "int", "b": "int"}}
 
-    main.process_group(start, schema, {})
+    main.process_group(start, {"T"}, {})
 
     error_log = json.loads((workdir / "output" / start / "error.json").read_text(encoding="utf-8"))
     assert error_log == []
 
-    analysis = json.loads((workdir / "output" / start / "analysis.json").read_text(encoding="utf-8"))
-    assert set(analysis.keys()) == {"クエリ基本", "クエリM"}
-    assert len(analysis["クエリ基本"]["lineage"]) == 2
-    assert len(analysis["クエリM"]["lineage"]) == 2
-    for row in analysis["クエリM"]["lineage"]:
-        assert row["参照テーブル"] == "T"
-        assert row["参照カラム"] in ("a", "b")
-
 
 # ---------------------------------------------------------------------------
-# F. マトリックス表（参照物理テーブル名列、○/◎表記）
+# F. マトリックス表
+#
+# 横持ち形式（「参照物理テーブル名」列にテーブル名とマークをカンマ区切りで
+# 詰め込む形式、旧・matrix.build_matrix_dataframe()）は撤去され、縦持ち形式
+# （1行1テーブル参照）に一本化された。対応するテスト観点は I セクションに
+# 統合している。
 # ---------------------------------------------------------------------------
-
-
-def test_f29_direct_reference_listed_with_maru():
-    """F29: 開始クエリが直接参照するテーブルが「参照物理テーブル名」列に
-    「物理名(○)」の形式で載る。
-    """
-    schema = {"T": {"a": "int"}, "U": {"b": "int"}}
-    queries = {"Main": "SELECT [a] FROM [dbo].[T]"}
-    usage, children = table_usage.resolve_table_usage(queries, schema, [])
-    rows = matrix.build_matrix_rows("Main", children, usage, [])
-    df = matrix.build_matrix_dataframe(rows, {"T": "T", "U": "U"})
-
-    row = df[df["開始クエリ"] == "Main"].iloc[0]
-    assert row["参照物理テーブル名"] == "T(○)"
-
-
-def test_f30_indirect_reference_listed_with_nijuumaru_on_all_ancestor_rows():
-    """F30: 開始クエリが参照するサブクエリがさらに別テーブルを参照する場合、
-    開始クエリ・間に挟まる上位のサブクエリすべての行の「参照物理テーブル名」に
-    「物理名(◎)」の形式で載る。○/◎の判定ロジック自体（rowsのdirect/indirect）は
-    テーブル列形式時代と変わらない（出力形式のみが変わったことの回帰確認）。
-    """
-    schema = {"T": {"a": "int"}}
-    queries = {
-        "Base": "SELECT [a] FROM [dbo].[T]",
-        "Mid": "SELECT [a] FROM Base",
-        "Main": "SELECT [a] FROM Mid",
-    }
-    usage, children = table_usage.resolve_table_usage(queries, schema, [])
-    rows = matrix.build_matrix_rows("Main", children, usage, [])
-    df = matrix.build_matrix_dataframe(rows, {"T": "T"})
-
-    by_path = {tuple(r["path"]): r for r in rows}
-    assert by_path[("Main",)]["indirect"] == {"T"}
-    assert by_path[("Main", "Mid")]["indirect"] == {"T"}
-    assert by_path[("Main", "Mid", "Base")]["direct"] == {"T"}
-
-    main_row = df[(df["開始クエリ"] == "Main") & (df.get("サブクエリ1", "") == "")].iloc[0]
-    mid_row = df[df.get("サブクエリ1", "") == "Mid"].iloc[0]
-    base_row = df[df.get("サブクエリ2", "") == "Base"].iloc[0]
-
-    assert main_row["参照物理テーブル名"] == "T(◎)"
-    assert mid_row["参照物理テーブル名"] == "T(◎)"
-    assert base_row["参照物理テーブル名"] == "T(○)"
-
-
-def test_f31_direct_and_indirect_combined_in_one_cell_comma_separated():
-    """F31: 同じ行に直接参照テーブルと間接参照テーブルが両方ある場合、
-    「参照物理テーブル名」列に直接→間接の順でカンマ区切りにまとめて記載される。
-    """
-    schema = {"T": {"a": "int"}, "U": {"b": "int"}}
-    queries = {
-        "Sub": "SELECT [b] FROM [dbo].[U]",
-        "Main": "SELECT a.[a], s.[b] FROM [dbo].[T] a, Sub s",
-    }
-    usage, children = table_usage.resolve_table_usage(queries, schema, [])
-    rows = matrix.build_matrix_rows("Main", children, usage, [])
-    df = matrix.build_matrix_dataframe(rows, {"T": "T", "U": "U"})
-
-    main_row = df[(df["開始クエリ"] == "Main") & (df.get("サブクエリ1", "") == "")].iloc[0]
-    assert main_row["参照物理テーブル名"] == "T(○), U(◎)"
-
-
-def test_f32_physical_table_name_uses_schema_qualified_form():
-    """F32: table_physical_names（loader.build_physical_table_name()の出力）が
-    「スキーマ.物理名」形式のとき、マトリックス表の「参照物理テーブル名」列にも
-    その形式で反映される。
-    """
-    schema = {"節": {"a": "int"}}
-    queries = {"Main": "SELECT [a] FROM [dbo].[節]"}
-    usage, children = table_usage.resolve_table_usage(queries, schema, [])
-    rows = matrix.build_matrix_rows("Main", children, usage, [])
-    df = matrix.build_matrix_dataframe(rows, {"節": "PO.節"})
-
-    row = df[df["開始クエリ"] == "Main"].iloc[0]
-    assert row["参照物理テーブル名"] == "PO.節(○)"
-
-
-def test_f33_no_table_column_enumeration_in_matrix():
-    """F33: マトリックス表にテーブルを全列挙する列群は存在せず、
-    列は 開始クエリ／サブクエリN.../参照物理テーブル名 のみになる。
-    """
-    schema = {"T": {"a": "int"}, "未使用テーブル": {"x": "int"}}
-    queries = {"Main": "SELECT [a] FROM [dbo].[T]"}
-    usage, children = table_usage.resolve_table_usage(queries, schema, [])
-    rows = matrix.build_matrix_rows("Main", children, usage, [])
-    df = matrix.build_matrix_dataframe(rows, {"T": "T", "未使用テーブル": "未使用テーブル"})
-
-    assert list(df.columns) == ["開始クエリ", "参照物理テーブル名"]
-
-
-def test_f34_empty_when_no_table_references():
-    """F34: どのテーブルも参照していない行では「参照物理テーブル名」が空文字になる。"""
-    schema = {}
-    queries = {"Main": "SELECT 1 AS a"}
-    usage, children = table_usage.resolve_table_usage(queries, schema, [])
-    rows = matrix.build_matrix_rows("Main", children, usage, [])
-    df = matrix.build_matrix_dataframe(rows, {})
-
-    row = df[df["開始クエリ"] == "Main"].iloc[0]
-    assert row["参照物理テーブル名"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +261,9 @@ def test_f34_empty_when_no_table_references():
 
 def test_h35_load_table_info_reads_schema_and_acquisition_method(tmp_path):
     """H35: table.jsonの「スキーマ」「スキーマ取得方法」フィールドが読み込める。
-    フィールドが省略された場合は空文字として扱われる。
+    フィールドが省略された場合は空文字として扱われる。カラム定義は現在の
+    パイプラインでは使用しないため、load_table_info()は「カラム」フィールドの
+    有無に関わらず動作する。
     """
     table_json = [
         {
@@ -597,7 +276,6 @@ def test_h35_load_table_info_reads_schema_and_acquisition_method(tmp_path):
         {
             "テーブル名": "機関マスタ",
             "物理名": "機関マスタ",
-            "カラム": [{"名前": "機関コード"}],
         },
     ]
     path = tmp_path / "table.json"
@@ -617,3 +295,230 @@ def test_h36_build_physical_table_name_with_and_without_schema():
     """H36: スキーマがある場合は「スキーマ.物理名」、無い場合は物理名のみを返す。"""
     assert loader.build_physical_table_name({"物理名": "節", "スキーマ": "PO"}) == "PO.節"
     assert loader.build_physical_table_name({"物理名": "工事台帳基本", "スキーマ": ""}) == "工事台帳基本"
+
+
+# ---------------------------------------------------------------------------
+# I. マトリックス表のロング形式（縦持ち）出力（matrix.py / output/matrix_long.csv）
+# ---------------------------------------------------------------------------
+
+
+def test_i37_long_entries_direct_and_indirect_marks_correct():
+    """I37: 開始クエリが参照するサブクエリがさらに別テーブルを参照する場合、
+    開始クエリ・間に挟まる上位のサブクエリすべての行に間接参照（◎）が、
+    実際にテーブルへ触れている末端のクエリの行には直接参照（○）が付く。
+    """
+    known_tables = {"T"}
+    queries = {
+        "Base": "SELECT [a] FROM T",
+        "Mid": "SELECT [a] FROM Base",
+        "Main": "SELECT [a] FROM Mid",
+    }
+    usage, children = resolve_usage_from_queries(queries, known_tables)
+    rows = matrix.build_matrix_rows("Main", children, usage, [])
+    entries = matrix.build_matrix_long_entries(rows, {"T": "T"})
+
+    by_path = {(tuple(e["path"]), e["テーブル名"]): e["マーク"] for e in entries}
+    assert by_path[(("Main",), "T")] == "◎"
+    assert by_path[(("Main", "Mid"), "T")] == "◎"
+    assert by_path[(("Main", "Mid", "Base"), "T")] == "○"
+    assert len(entries) == 3  # Mainより浅い行は存在しないため、参照テーブルは各行1件ずつ
+
+
+def test_i38_long_entries_sorted_within_same_mark():
+    """I38: 同一行・同一マークに複数テーブルがある場合、テーブル名でソートされる。"""
+    known_tables = {"T", "U"}
+    queries = {"Main": "SELECT a.[a], u.[b] FROM T a, U u"}
+    usage, children = resolve_usage_from_queries(queries, known_tables)
+    rows = matrix.build_matrix_rows("Main", children, usage, [])
+    entries = matrix.build_matrix_long_entries(rows, {"T": "T", "U": "U"})
+
+    direct_entries = [e for e in entries if e["マーク"] == "○"]
+    assert [e["テーブル名"] for e in direct_entries] == ["T", "U"]
+
+
+def test_i_long_entries_physical_table_name_uses_schema_qualified_form():
+    """I: table_physical_names（loader.build_physical_table_name()の出力）が
+    「スキーマ.物理名」形式のとき、縦持ちレコードの「テーブル名」にもその形式で反映される。
+    """
+    known_tables = {"節"}
+    queries = {"Main": "SELECT [a] FROM 節"}
+    usage, children = resolve_usage_from_queries(queries, known_tables)
+    rows = matrix.build_matrix_rows("Main", children, usage, [])
+    entries = matrix.build_matrix_long_entries(rows, {"節": "PO.節"})
+
+    assert entries == [{"path": ["Main"], "テーブル名": "PO.節", "マーク": "○"}]
+
+
+def test_i_long_entries_empty_when_no_table_references():
+    """I: どのテーブルも参照していないクエリでは、縦持ちレコードは1件も作られない
+    （build_matrix_long_dataframe()は開始クエリ・テーブル名・マークの列だけを持つ
+    0行のDataFrameを返す）。
+    """
+    queries = {"Main": "SELECT 1 AS a"}
+    usage, children = resolve_usage_from_queries(queries, set())
+    rows = matrix.build_matrix_rows("Main", children, usage, [])
+    entries = matrix.build_matrix_long_entries(rows, {})
+
+    assert entries == []
+    df = matrix.build_matrix_long_dataframe(entries)
+    assert list(df.columns) == ["開始クエリ", "テーブル名", "マーク"]
+    assert len(df) == 0
+
+
+def test_i39_long_dataframe_column_layout_single_group():
+    """I39: 単一グループの場合の列構成（開始クエリ／サブクエリN.../テーブル名／マーク）。"""
+    known_tables = {"T"}
+    queries = {
+        "Base": "SELECT [a] FROM T",
+        "Main": "SELECT [a] FROM Base",
+    }
+    usage, children = resolve_usage_from_queries(queries, known_tables)
+    rows = matrix.build_matrix_rows("Main", children, usage, [])
+    entries = matrix.build_matrix_long_entries(rows, {"T": "T"})
+    df = matrix.build_matrix_long_dataframe(entries)
+
+    assert list(df.columns) == ["開始クエリ", "サブクエリ1", "テーブル名", "マーク"]
+    assert len(df) == 2  # Main行(◎)・Base行(○)
+
+
+def test_i40_long_dataframe_matches_prompt_example_for_single_group():
+    """I40: プロンプト記載の出力例（クエリ業者入札集計相当の2クエリ構成）と一致する。"""
+    known_tables = {"入札明細台帳", "業者台帳"}
+    queries = {
+        "クエリ業者入札明細": "SELECT A.[業者ID], A.[業者名], B.[金額] FROM 業者台帳 A JOIN 入札明細台帳 B ON A.[業者ID] = B.[業者ID]",
+        "クエリ業者入札集計": "SELECT [業者ID], [業者名], SUM([金額]) AS [入札合計] FROM クエリ業者入札明細 GROUP BY [業者ID], [業者名]",
+    }
+    usage, children = resolve_usage_from_queries(queries, known_tables)
+    rows = matrix.build_matrix_rows("クエリ業者入札集計", children, usage, [])
+    entries = matrix.build_matrix_long_entries(rows, {"入札明細台帳": "入札明細台帳", "業者台帳": "業者台帳"})
+    df = matrix.build_matrix_long_dataframe(entries)
+
+    assert df.to_dict("records") == [
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "", "テーブル名": "入札明細台帳", "マーク": "◎"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "", "テーブル名": "業者台帳", "マーク": "◎"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "クエリ業者入札明細", "テーブル名": "入札明細台帳", "マーク": "○"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "クエリ業者入札明細", "テーブル名": "業者台帳", "マーク": "○"},
+    ]
+
+
+def test_i41_long_dataframe_pads_columns_across_groups_of_different_depth():
+    """I41: 複数の起点クエリ（ネスト数が異なる）分のentriesをまとめて1つの
+    DataFrameに渡すと、列数は全体の最大ネスト数に揃えられ、浅いグループの行は
+    余った列が空欄になる（output/matrix_long.csv が全起点クエリ分を1ファイルに
+    まとめる際の列揃えの検証）。
+    """
+    known_tables = {"T"}
+    shallow_queries = {"Shallow": "SELECT [a] FROM T"}
+    deep_queries = {
+        "Base": "SELECT [a] FROM T",
+        "Mid": "SELECT [a] FROM Base",
+        "Deep": "SELECT [a] FROM Mid",
+    }
+
+    usage1, children1 = resolve_usage_from_queries(shallow_queries, known_tables)
+    rows1 = matrix.build_matrix_rows("Shallow", children1, usage1, [])
+    entries1 = matrix.build_matrix_long_entries(rows1, {"T": "T"})
+
+    usage2, children2 = resolve_usage_from_queries(deep_queries, known_tables)
+    rows2 = matrix.build_matrix_rows("Deep", children2, usage2, [])
+    entries2 = matrix.build_matrix_long_entries(rows2, {"T": "T"})
+
+    df = matrix.build_matrix_long_dataframe(entries1 + entries2)
+
+    assert list(df.columns) == ["開始クエリ", "サブクエリ1", "サブクエリ2", "テーブル名", "マーク"]
+    shallow_row = df[df["開始クエリ"] == "Shallow"].iloc[0]
+    assert shallow_row["サブクエリ1"] == ""
+    assert shallow_row["サブクエリ2"] == ""
+
+
+def test_i42_end_to_end_matrix_long_csv_output(workdir):
+    """I42: main.main() 実行で output/matrix_long.csv が全起点クエリ分をまとめて
+    出力され、utf-8-sig（Excelで文字化けしないBOM付きUTF-8）で読み込める。
+    """
+    write_json(
+        workdir / "input" / "クエリ業者入札集計" / "chain_queries.json",
+        [
+            {
+                "クエリ名": "クエリ業者入札明細",
+                "SQL": "SELECT A.[業者ID], A.[業者名], B.[金額] FROM 業者台帳 A JOIN 入札明細台帳 B ON A.[業者ID] = B.[業者ID]",
+                "呼び出し元": [],
+            },
+            {
+                "クエリ名": "クエリ業者入札集計",
+                "SQL": "SELECT [業者ID], [業者名], SUM([金額]) AS [入札合計] FROM クエリ業者入札明細 GROUP BY [業者ID], [業者名]",
+                "呼び出し元": ["クエリ業者入札明細"],
+            },
+        ],
+    )
+    write_json(
+        workdir / "input" / "table.json",
+        [
+            {"テーブル名": "入札明細台帳", "物理名": "入札明細台帳"},
+            {"テーブル名": "業者台帳", "物理名": "業者台帳"},
+        ],
+    )
+
+    main.main()
+
+    import pandas as pd
+
+    df = pd.read_csv(workdir / "output" / "matrix_long.csv", encoding="utf-8-sig", keep_default_na=False)
+    assert list(df.columns) == ["開始クエリ", "サブクエリ1", "テーブル名", "マーク"]
+    assert df.to_dict("records") == [
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "", "テーブル名": "入札明細台帳", "マーク": "◎"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "", "テーブル名": "業者台帳", "マーク": "◎"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "クエリ業者入札明細", "テーブル名": "入札明細台帳", "マーク": "○"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "クエリ業者入札明細", "テーブル名": "業者台帳", "マーク": "○"},
+    ]
+
+
+def test_i43_lineage_xlsx_has_single_long_format_sheet(workdir):
+    """I43: 各グループの lineage.xlsx は「テーブル参照マトリクス」（縦持ち形式）の
+    1シートのみを持つ（横持ちシート・カラム単位リネージシートはいずれも撤去済み）。
+    内容は output/matrix_long.csv のこのグループ分と一致する。
+    """
+    write_json(
+        workdir / "input" / "クエリ業者入札集計" / "chain_queries.json",
+        [
+            {
+                "クエリ名": "クエリ業者入札明細",
+                "SQL": "SELECT A.[業者ID], A.[業者名], B.[金額] FROM 業者台帳 A JOIN 入札明細台帳 B ON A.[業者ID] = B.[業者ID]",
+                "呼び出し元": [],
+            },
+            {
+                "クエリ名": "クエリ業者入札集計",
+                "SQL": "SELECT [業者ID], [業者名], SUM([金額]) AS [入札合計] FROM クエリ業者入札明細 GROUP BY [業者ID], [業者名]",
+                "呼び出し元": ["クエリ業者入札明細"],
+            },
+        ],
+    )
+    write_json(
+        workdir / "input" / "table.json",
+        [
+            {"テーブル名": "入札明細台帳", "物理名": "入札明細台帳"},
+            {"テーブル名": "業者台帳", "物理名": "業者台帳"},
+        ],
+    )
+
+    main.main()
+
+    import pandas as pd
+
+    xlsx_path = workdir / "output" / "クエリ業者入札集計" / "lineage.xlsx"
+    sheets = pd.read_excel(xlsx_path, sheet_name=None)
+    assert list(sheets.keys()) == ["テーブル参照マトリクス"]
+
+    df_long = sheets["テーブル参照マトリクス"].fillna("")
+    assert list(df_long.columns) == ["開始クエリ", "サブクエリ1", "テーブル名", "マーク"]
+    assert df_long.to_dict("records") == [
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "", "テーブル名": "入札明細台帳", "マーク": "◎"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "", "テーブル名": "業者台帳", "マーク": "◎"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "クエリ業者入札明細", "テーブル名": "入札明細台帳", "マーク": "○"},
+        {"開始クエリ": "クエリ業者入札集計", "サブクエリ1": "クエリ業者入札明細", "テーブル名": "業者台帳", "マーク": "○"},
+    ]
+
+
+def matrix_long_from_output(workdir, start_query):
+    import pandas as pd
+
+    return pd.read_excel(workdir / "output" / start_query / "lineage.xlsx", sheet_name="テーブル参照マトリクス")
