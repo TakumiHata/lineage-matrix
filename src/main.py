@@ -1,11 +1,11 @@
-"""VBA がチェーン検出しフル展開した chain_queries/<起点クエリ>/chain_queries.json
+"""VBA がチェーン検出しフル展開した input/<起点クエリ>/chain_queries.json
 （AI変換済みの場合は converted_queries.json）を解析し、起点クエリごとに
 出力カラムがどのテーブル・カラムに由来するかをフラットテーブル形式で
 output/<起点クエリ>/lineage.xlsx に出力するスクリプト。
 
 処理の流れ：
-1. table.json を読み込む
-2. chain_queries/ 直下のサブフォルダを走査して起点クエリを取得
+1. input/table.json を読み込む
+2. input/ 直下のサブフォルダを走査して起点クエリを取得
 3. 各起点クエリについて：
    - converted_queries.json があればそちらを優先、なければ chain_queries.json を読み込む
    - sql_expand → lineage_extract → report で解析実行
@@ -14,7 +14,7 @@ output/<起点クエリ>/lineage.xlsx に出力するスクリプト。
 
 import sys
 
-from config import CHAIN_QUERIES_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
+from config import INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
 from lineage_extract import analyze_query
 from loader import build_physical_table_name, load_queries_for_query_dir, load_schema, load_table_info
 from matrix import build_matrix_dataframe, build_matrix_rows
@@ -24,7 +24,7 @@ from table_usage import resolve_table_usage
 
 def process_group(start_query: str, schema: dict, table_physical_names: dict[str, str]) -> None:
     """起点クエリに対してリネージ解析を実行し、output/<起点クエリ>/ に結果を出力する。"""
-    query_dir = CHAIN_QUERIES_DIR / start_query
+    query_dir = INPUT_DIR / start_query
     result = load_queries_for_query_dir(query_dir)
     if result is None:
         print(f"[{start_query}] エラー: chain_queries.json/converted_queries.json が見つかりません。スキップします。")
@@ -71,8 +71,8 @@ def main() -> None:
     start_queries = discover_start_queries()
 
     if not start_queries:
-        print(f"エラー: {CHAIN_QUERIES_DIR} 下に起点クエリのフォルダが見つかりません。")
-        print(f"VBA出力を {CHAIN_QUERIES_DIR}/<起点クエリ名>/chain_queries.json に配置してください。")
+        print(f"エラー: {INPUT_DIR} 下に起点クエリのフォルダが見つかりません。")
+        print(f"VBA出力を {INPUT_DIR}/<起点クエリ名>/chain_queries.json に配置してください。")
         sys.exit(1)
 
     print(f"起点クエリ数: {len(start_queries)}")

@@ -25,20 +25,20 @@ pip install -r requirements.txt
 python3 src/main.py
 ```
 
-リポジトリルートから実行する（`chain_queries/`・`table.json`・`output/` は実行時の
+リポジトリルートから実行する（`input/`・`output/` は実行時の
 カレントディレクトリ基準の相対パス）。
-`table.json`（全テーブルの一覧）と `chain_queries/<起点クエリ名>/`（VBA出力の `chain_queries.json`、
+`input/table.json`（全テーブルの一覧）と `input/<起点クエリ名>/`（VBA出力の `chain_queries.json`、
 AI変換済みなら `converted_queries.json`）を読み込み、起点クエリごとに `output/<起点クエリ名>/` へ結果を生成する。
 
-起点クエリは `chain_queries/` 直下の全サブフォルダから **自動検出** される。設定ファイルは不要。
+起点クエリは `input/` 直下の全サブフォルダから **自動検出** される。設定ファイルは不要。
 
 ---
 
-## `chain_queries/` / `table.json` のインターフェース仕様
+## `input/` のインターフェース仕様
 
 ```
-table.json                                  # 全テーブルのフラットな一覧（VBAが出力、リポジトリルート直下）
-chain_queries/
+input/
+├── table.json                                # 全テーブルのフラットな一覧（VBAが出力）
 ├── クエリ工事委託分析/
 │   ├── chain_queries.json                 # VBA出力（多階層フル展開済み、Access SQL）
 │   └── converted_queries.json             # AI変換／SSMA変換済みSQL（あれば優先使用、オプション）
@@ -46,17 +46,18 @@ chain_queries/
     └── chain_queries.json                 # AI変換がまだの場合はこれだけでも解析対象になる
 ```
 
-**起点クエリは自動検出される**：`chain_queries/` 直下の全サブフォルダのうち、
+**起点クエリは自動検出される**：`input/` 直下の全サブフォルダのうち、
 `chain_queries.json` または `converted_queries.json` が存在するサブフォルダ名が
-起点クエリとして自動的に認識される。`chain_queries.json` のみ（AI変換がまだのクエリ）の
-フォルダも解析対象に含まれる。設定ファイル（`start_queries.json` など）は不要。
+起点クエリとして自動的に認識される（`input/table.json`はファイルなので対象外）。
+`chain_queries.json` のみ（AI変換がまだのクエリ）のフォルダも解析対象に含まれる。
+設定ファイル（`start_queries.json` など）は不要。
 
 ### 運用フロー
 
 1. **VBA実行**: 全クエリそれぞれを起点として、多階層の依存チェーンを重複除外なしにフル展開
-   → `chain_queries/<起点クエリ名>/chain_queries.json` 出力
+   → `input/<起点クエリ名>/chain_queries.json` 出力
 2. **AI変換**（任意）: `chain_queries.json` をAI変換サービスで SQL Server SQL に変換
-3. **配置**: 変換結果を `chain_queries/<起点クエリ名>/converted_queries.json` に配置
+3. **配置**: 変換結果を `input/<起点クエリ名>/converted_queries.json` に配置
 4. **実行**: `python3 src/main.py` → 自動検出・リネージ解析 → 結果出力
    （`converted_queries.json` があればそちらを優先、なければ `chain_queries.json` を使用）
 
@@ -138,7 +139,7 @@ JOIN構造の欠落防止と、SQL内コメント埋め込みによる列消失�
 ]
 
 出力したJSONは `converted_queries.json` として保存し、
-`chain_queries/<起点クエリ名>/converted_queries.json` に配置してください。
+`input/<起点クエリ名>/converted_queries.json` に配置してください。
 ```
 
 ### `converted_queries.json`（AI変換済みSQLのフラット一覧）
@@ -164,7 +165,7 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 **クエリ間参照はそのまま**：`FROM クエリ工事基本` のようにクエリ名で参照する。
 リネージ解析時に `sources=` で展開される。
 
-### `table.json`（テーブル情報・全件フラット）
+### `input/table.json`（テーブル情報・全件フラット）
 
 物理テーブルのカラム定義一覧。`src/loader.py` の `load_schema()` が `sqlglot.lineage()` に渡す
 スキーマ辞書に変換し、`load_table_info()` が「物理テーブル名」組み立てに使う`物理名`・`スキーマ`を
@@ -326,7 +327,7 @@ AI変換の精度には波があるため、`main.py`本体のリネージ解析
 python3 src/validate.py
 ```
 
-`main.py`と同様に `chain_queries/` 直下を自動検出して、起点クエリごとに `output/<起点クエリ名>/validation.json` を出力する。
+`main.py`と同様に `input/` 直下を自動検出して、起点クエリごとに `output/<起点クエリ名>/validation.json` を出力する。
 NGが1件でもあれば終了コード1で終了する（CI等での自動チェックにそのまま使える）。
 
 ### 検知内容
@@ -359,14 +360,55 @@ DBに接続して実際に実行するわけではないため、あくまで**s
 
 ---
 
+## 軽量パス：`table_reference_extract.py`
+
+マトリックス表に必要なのは「クエリ内での参照テーブル情報」（テーブル単位のみ、カラム単位は不要）であり、テーブル参照の抽出だけであれば sqlglot は関数の意味を理解する必要がなく構文的にパースできればよい。そのため `converted_queries.json`（AI変換済みT-SQL）を必須とせず、`chain_queries.json` のAccess SQL（Jet-SQL）から直接、参照テーブル一覧をテーブル単位で抽出できる軽量な代替パス。
+
+AI変換はボトルネックであり、SSMAは`Format`関数・パラメータクエリ・クロスタブクエリを変換できないため、これらを経由せずに済む。
+
+```bash
+python3 src/table_reference_extract.py
+```
+
+`main.py`と同様に `input/` 直下を自動検出するが、**`converted_queries.json`の有無を問わず必ず`chain_queries.json`のAccess SQLを使う**（`chain_queries.json`が存在しないフォルダはスキップする）。結果は `output/table_references.json` に1ファイルへまとめて出力する。
+
+Jet-SQL特有の以下2構文だけを正規表現で前処理して除去してから `sqlglot.parse_one(sql, read="tsql")` でパースする（`tsql`はJet-SQL自体の方言がsqlglotに存在しないため、構文的に近いものとして採用）。
+
+- 先頭の `PARAMETERS ... ;` 宣言
+- `TRANSFORM <式> SELECT ... PIVOT <式>` のクロスタブ構文（`TRANSFORM`句と`PIVOT`句を除去し、中間の`SELECT ... FROM ... GROUP BY ...`部分のみ残す）
+
+パースした結果 `find_all(exp.Table)` で取得した各テーブル名を、`table.json`由来のテーブル名一覧・そのクエリグループ内の登録済みクエリ名一覧と突き合わせて分類する。
+
+```json
+[
+  {
+    "クエリ名": "Q_Test_Crosstab",
+    "参照テーブル": ["T_受注明細"],
+    "参照サブクエリ": [],
+    "未解決": [],
+    "パース失敗": false
+  }
+]
+```
+
+- `参照テーブル`：`table.json`に存在する物理テーブルへの参照
+- `参照サブクエリ`：他の登録済みクエリへの参照（VBA側のチェーン検出で既に捕捉されている想定のため、`参照テーブル`には含めない）
+- `未解決`：テーブル・クエリのどちらにも一致しない参照名（目視確認の対象）
+- `パース失敗`：前処理後もsqlglotがパースできなかった場合。他のクエリの処理は止めない
+
+カラム単位の詳細なリネージ（`lineage_extract.py` が行う出力位置ベースの解決等）は対象外。今後AI変換・SSMA変換したクエリに対して、より詳細な検証が必要になった際は `lineage_extract.py`（`main.py`経由）を使う。
+
+---
+
 ## `src/` のモジュール構成
 
 ```
 src/
 ├── main.py             # エントリポイント：起点クエリの発見、ログ組み立て
 ├── validate.py           # main.pyとは別の事前検証コマンド（構文・スキーマチェック）
-├── config.py            # パス関連の定数、起点クエリ（chain_queries/配下のフォルダ）の発見
-├── loader.py             # chain_queries/*.json（クエリ）・table.json（全テーブル・物理テーブル名）の読み込み
+├── table_reference_extract.py # main.pyとは別の軽量パス：chain_queries.jsonのAccess SQLから直接、テーブル単位の参照一覧を抽出
+├── config.py            # パス関連の定数、起点クエリ（input/配下のフォルダ）の発見
+├── loader.py             # input/*.json（クエリ）・input/table.json（全テーブル・物理テーブル名）の読み込み
 ├── casing.py             # qualify()通過後に失われる識別子の大文字小文字をschema/queriesの表記へ復元するヘルパー
 ├── sql_expand.py         # クエリ参照のインライン展開＋qualify検証（main.pyとvalidate.pyで共通利用）
 ├── lineage_extract.py    # lineage() を辿り、SELECT出力カラム単位のフラット行を組み立てる
@@ -379,7 +421,7 @@ src/
 各モジュールはスクリプトと同じディレクトリにある兄弟モジュールとして素朴に import している
 （Pythonが実行スクリプトのディレクトリを自動的に `sys.path` に加えるため、パッケージ化は不要）。
 
-`chain_queries/` 直下に起点クエリのフォルダが1件も見つからない場合、`main()` は
+`input/` 直下に起点クエリのフォルダが1件も見つからない場合、`main()` は
 エラーメッセージを表示して終了コード1で終了する。
 
 ## ディレクトリ構成
@@ -388,6 +430,8 @@ src/
 .
 ├── src/
 │   ├── main.py
+│   ├── validate.py
+│   ├── table_reference_extract.py
 │   ├── config.py
 │   ├── loader.py
 │   ├── casing.py
@@ -396,15 +440,16 @@ src/
 │   ├── table_usage.py
 │   ├── matrix.py
 │   └── report.py
-├── table.json                        # 全テーブルのフラットな一覧（VBAが出力）
-├── chain_queries/
+├── input/
+│   ├── table.json                    # 全テーブルのフラットな一覧（VBAが出力）
 │   └── <起点クエリ名>/
 │       ├── chain_queries.json       # VBA出力（多階層フル展開済み、Access SQL）
 │       └── converted_queries.json   # AI変換／SSMA変換済みSQL（あれば優先使用、オプション）
 ├── output/                          # 生成される成果物（git管理外）
-│   └── <起点クエリ名>/
-│       ├── lineage.xlsx
-│       ├── analysis.json
-│       └── error.json
+│   ├── <起点クエリ名>/
+│   │   ├── lineage.xlsx
+│   │   ├── analysis.json
+│   │   └── error.json
+│   └── table_references.json       # table_reference_extract.pyの出力（全起点クエリ分をまとめて1ファイル）
 └── requirements.txt
 ```

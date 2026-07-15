@@ -111,7 +111,7 @@ def test_a2_chain_queries_format_is_generically_loadable(tmp_path):
 def test_a3_converted_queries_used_when_present(workdir):
     """A3: converted_queries.jsonが存在する場合、それが解析に使われる。"""
     start = "クエリI"
-    d = workdir / "chain_queries" / start
+    d = workdir / "input" / start
     d.mkdir(parents=True)
     write_json(d / "converted_queries.json", [{"クエリ名": "クエリI", "SQL": "SELECT [a] FROM [dbo].[T]"}])
     schema = {"T": {"a": "int", "b": "int"}}
@@ -127,7 +127,7 @@ def test_a3_converted_queries_takes_priority_over_chain_queries(workdir):
     converted_queries.jsonの内容が使われ、chain_queries.jsonは使われない。
     """
     start = "クエリJ"
-    d = workdir / "chain_queries" / start
+    d = workdir / "input" / start
     d.mkdir(parents=True)
     write_json(d / "converted_queries.json", [{"クエリ名": "クエリJ", "SQL": "SELECT [a] FROM [dbo].[T]"}])
     write_json(d / "chain_queries.json", [{"クエリ名": "クエリJ", "SQL": "SELECT [b] FROM [dbo].[T]", "呼び出し元": []}])
@@ -146,7 +146,7 @@ def test_a4_chain_queries_used_as_fallback_when_converted_missing(workdir):
     リネージ解析が実行される。
     """
     start = "クエリK"
-    d = workdir / "chain_queries" / start
+    d = workdir / "input" / start
     d.mkdir(parents=True)
     write_json(d / "chain_queries.json", [{"クエリ名": "クエリK", "SQL": "SELECT [a] FROM [dbo].[T]", "呼び出し元": []}])
     schema = {"T": {"a": "int"}}
@@ -162,7 +162,7 @@ def test_a4_skip_when_neither_chain_queries_nor_converted_exists(workdir, capsys
     エラーメッセージを出して当該フォルダをスキップする。
     """
     start = "クエリZ"
-    (workdir / "chain_queries" / start).mkdir(parents=True)
+    (workdir / "input" / start).mkdir(parents=True)
     schema = {"T": {"a": "int"}}
 
     main.process_group(start, schema, {})
@@ -186,21 +186,22 @@ def test_a5_bom_and_no_bom_utf8(tmp_path):
     assert loader.load_queries(p_nobom) == {"Q": "SELECT 1 AS a"}
 
 
-def test_a6_discover_start_queries_under_chain_queries_dir(workdir):
-    """A6: 起点クエリ検出。chain_queries/ 直下のサブフォルダのうち、
+def test_a6_discover_start_queries_under_input_dir(workdir):
+    """A6: 起点クエリ検出。input/ 直下のサブフォルダのうち、
     chain_queries.json またはconverted_queries.jsonが存在するものだけが対象になる。
     AI変換前の chain_queries.json のみのフォルダも対象に含まれる
     （従来の「converted_queries.jsonが存在するフォルダのみ対象」という制約は緩和された）。
     """
-    (workdir / "chain_queries" / "クエリA").mkdir(parents=True)
-    write_json(workdir / "chain_queries" / "クエリA" / "converted_queries.json", [])
+    (workdir / "input" / "クエリA").mkdir(parents=True)
+    write_json(workdir / "input" / "クエリA" / "converted_queries.json", [])
 
-    (workdir / "chain_queries" / "クエリB").mkdir(parents=True)
-    write_json(workdir / "chain_queries" / "クエリB" / "chain_queries.json", [])  # AI変換前のみ
+    (workdir / "input" / "クエリB").mkdir(parents=True)
+    write_json(workdir / "input" / "クエリB" / "chain_queries.json", [])  # AI変換前のみ
 
-    (workdir / "chain_queries" / "空フォルダ").mkdir(parents=True)
+    (workdir / "input" / "空フォルダ").mkdir(parents=True)
 
-    (workdir / "table.json").write_text("[]", encoding="utf-8")  # chain_queries/ 配下ではないファイル
+    # input/table.json はサブフォルダの兄弟に同居するファイルであり、フォルダではないため対象外
+    (workdir / "input" / "table.json").write_text("[]", encoding="utf-8")
 
     result = config.discover_start_queries()
 
@@ -413,7 +414,7 @@ def test_d20_lineage_dataframe_column_layout():
 def test_d21_error_json_records_failures(workdir):
     """D21: 解析失敗・不明行がある場合、error.jsonに正しく記録される。"""
     start = "クエリL"
-    d = workdir / "chain_queries" / start
+    d = workdir / "input" / start
     d.mkdir(parents=True)
     write_json(
         d / "converted_queries.json",
@@ -434,7 +435,7 @@ def test_d21_error_json_records_failures(workdir):
 def test_d22_analysis_json_complete_when_zero_failures(workdir):
     """D22: 解析失敗・不明行がゼロのケースで、analysis.jsonに全件正しく出力される。"""
     start = "クエリM"
-    d = workdir / "chain_queries" / start
+    d = workdir / "input" / start
     d.mkdir(parents=True)
     write_json(
         d / "converted_queries.json",

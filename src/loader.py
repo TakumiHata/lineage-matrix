@@ -1,4 +1,4 @@
-"""chain_queries/ 配下のJSON（チェーン済みクエリ）とtable.json（全テーブル）を読み込む処理。"""
+"""input/ 配下のJSON（チェーン済みクエリ）とtable.json（全テーブル）を読み込む処理。"""
 
 import json
 from pathlib import Path
@@ -32,7 +32,7 @@ def load_queries(path: Path) -> dict[str, str]:
 
 
 def load_queries_for_query_dir(query_dir: Path) -> tuple[dict[str, str], Path] | None:
-    """起点クエリのフォルダ（chain_queries/<起点クエリ名>/）から、
+    """起点クエリのフォルダ（input/<起点クエリ名>/）から、
     converted_queries.json（AI変換／SSMA変換済みSQL）があればそちらを優先して読み込み、
     なければ chain_queries.json（VBA出力のAccess SQL）を読み込む。
     どちらのファイルも存在しない場合はNoneを返す。
