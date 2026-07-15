@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from config import TABLES_FILE
+from config import INPUT_DIR, TABLES_FILE
 
 
 def _load_json_with_encoding(path: Path) -> dict:
@@ -26,6 +26,18 @@ def load_queries(path: Path) -> dict[str, str]:
     """
     data = _load_json_with_encoding(path)
     return {item["クエリ名"]: item["SQL"] for item in data}
+
+
+def load_group_queries(start_query: str) -> dict[str, str] | None:
+    """input/<start_query>/chain_queries.json を読み込む。存在しなければ警告を
+    出してNoneを返す（main.py・table_reference_extract.pyの両方が起点クエリ単位で
+    共有するロード処理）。
+    """
+    chain_path = INPUT_DIR / start_query / "chain_queries.json"
+    if not chain_path.exists():
+        print(f"[{start_query}] 警告: chain_queries.json が見つかりません。スキップします。")
+        return None
+    return load_queries(chain_path)
 
 
 def load_table_info(path: Path = TABLES_FILE) -> dict[str, dict]:

@@ -11,14 +11,14 @@ Jet-SQL特有構文だけを前処理で除去してtsql方言でパースする
 クロスタブクエリを変換できないため）。
 """
 
-import json
 import re
 
 import sqlglot
 import sqlglot.expressions as exp
 
-from config import DIALECT, INPUT_DIR, OUTPUT_DIR, discover_start_queries
-from loader import load_queries, load_table_info
+from config import DIALECT, OUTPUT_DIR, discover_start_queries
+from loader import load_group_queries, load_table_info
+from report import write_json
 
 _PARAMETERS_RE = re.compile(r"^\s*PARAMETERS\b.*?;\s*", re.IGNORECASE | re.DOTALL)
 _TRANSFORM_RE = re.compile(r"\bTRANSFORM\b\s+.*?\s+(?=SELECT\b)", re.IGNORECASE | re.DOTALL)
@@ -104,19 +104,17 @@ def main() -> None:
     start_queries = discover_start_queries()
     results: list[dict] = []
     for start_query in start_queries:
-        chain_path = INPUT_DIR / start_query / "chain_queries.json"
-        if not chain_path.exists():
-            print(f"[{start_query}] 警告: chain_queries.json が見つかりません。スキップします。")
+        queries = load_group_queries(start_query)
+        if queries is None:
             continue
 
-        queries = load_queries(chain_path)
         classified = classify_queries(queries, known_tables)
         for name, entry in classified.items():
             results.append({"クエリ名": name, **entry})
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / "table_references.json"
-    out_path.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(out_path, results)
 
     print(f"クエリ数={len(results)} -> {out_path}")
 

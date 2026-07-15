@@ -20,7 +20,7 @@
 import sys
 
 from config import INPUT_DIR, OUTPUT_DIR, discover_start_queries
-from loader import build_physical_table_name, load_queries, load_table_info
+from loader import build_physical_table_name, load_group_queries, load_table_info
 from matrix import build_matrix_long_dataframe, build_matrix_long_entries, build_matrix_rows
 from report import write_group_output
 from table_reference_extract import classify_queries
@@ -32,12 +32,9 @@ def process_group(start_query: str, known_tables: set[str], table_physical_names
     matrix_long.csv用に、このグループの縦持ちレコード（build_matrix_long_entries()の
     出力）を返す（スキップした場合は空リスト）。
     """
-    chain_path = INPUT_DIR / start_query / "chain_queries.json"
-    if not chain_path.exists():
-        print(f"[{start_query}] エラー: chain_queries.json が見つかりません。スキップします。")
+    queries = load_group_queries(start_query)
+    if queries is None:
         return []
-
-    queries = load_queries(chain_path)
     if not queries:
         print(f"[{start_query}] 警告: chain_queries.json が空です。スキップします。")
         return []
