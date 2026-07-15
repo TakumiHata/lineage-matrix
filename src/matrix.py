@@ -1,4 +1,4 @@
-"""クエリ呼び出し木を辿り、クエリ階層×テーブル名のワイド形式マトリックスを組み立てる。"""
+"""クエリ呼び出し木を辿り、クエリ階層×参照物理テーブル名のマトリックスを組み立てる。"""
 
 import pandas as pd
 
@@ -46,31 +46,34 @@ def build_matrix_rows(
     return rows
 
 
-def build_matrix_dataframe(rows: list[dict], schema: dict) -> pd.DataFrame:
+def build_matrix_dataframe(rows: list[dict], table_physical_names: dict[str, str]) -> pd.DataFrame:
     """行リストをワイドDataFrameに変換する。階層列は「開始クエリ」に加え、
     そのグループ内の最大ネスト数に応じて サブクエリ1, サブクエリ2, ... を動的に
     追加する（report.build_lineage_dataframeの参照クエリ1,2,...と同じ考え方）。
     行はルートからそのクエリまでのパンくず（外側→内側）を、path の深さに応じた
-    列まで埋める。テーブル列はtable.json（schemaのキー順）をそのまま採用し、
-    既存のテーブル設計書と列位置を揃えられるようにする。
+    列まで埋める。
+
+    テーブルを全列挙する列群の代わりに「参照物理テーブル名」列1つにまとめる。
+    table_physical_names（loader.build_physical_table_name()で組み立てた
+    テーブル名→物理テーブル名の対応表）を使い、直接参照は「物理名(○)」、
+    間接参照は「物理名(◎)」の形式にしてカンマ区切りで連結する
+    （物理テーブル名が対応表に無い場合はテーブル名をそのまま使う）。
     """
     max_depth = max((len(r["path"]) for r in rows), default=1)
     level_columns = ["開始クエリ"] + [f"サブクエリ{i}" for i in range(1, max_depth)]
-    table_columns = list(schema.keys())
-    columns = [*level_columns, *table_columns]
+    columns = [*level_columns, "参照物理テーブル名"]
 
     out_rows = []
     for r in rows:
         row = {col: "" for col in level_columns}
         for i, name in enumerate(r["path"]):
             row[level_columns[i]] = name
-        for table in table_columns:
-            if table in r["direct"]:
-                row[table] = "○"
-            elif table in r["indirect"]:
-                row[table] = "◎"
-            else:
-                row[table] = ""
+
+        direct_names = sorted(table_physical_names.get(t, t) for t in r["direct"])
+        indirect_names = sorted(table_physical_names.get(t, t) for t in r["indirect"])
+        parts = [f"{name}(○)" for name in direct_names] + [f"{name}(◎)" for name in indirect_names]
+        row["参照物理テーブル名"] = ", ".join(parts)
+
         out_rows.append(row)
 
     return pd.DataFrame(out_rows, columns=columns)

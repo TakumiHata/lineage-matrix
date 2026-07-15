@@ -1,12 +1,17 @@
 # lineage-matrix
 
-VBA が検出したAccess クエリのチェーン（`converted_queries.json`）を解析し、
-各クエリの出力カラムがどのテーブル・カラムに由来するかをフラットテーブル形式で Excel 出力するツール。
+VBA が全クエリそれぞれを起点として多階層の依存チェーンをフルに展開したもの
+（`chain_queries.json`）、またはそれをAI変換した SQL Server 用 SQL
+（`converted_queries.json`）を解析し、各クエリの出力カラムがどのテーブル・カラムに
+由来するかをフラットテーブル形式で Excel 出力するツール。
 
 **AI変換済みSQL Server用SQL を対象** にした、リネージ解析と影響範囲分析に特化したツール。
 
 カラムの由来解決には [SQLGlot](https://github.com/tobymao/sqlglot) の `lineage()` を使用し、
 サブクエリ・CTE・集計関数（SUM等）・クエリ間参照を含む複雑な構造にも対応する。
+
+全クエリを個別に、代表クエリへの絞り込みや重複チェーンの除外なしにマトリックス表へ反映する
+（クエリの類似度によるグルーピング・代表選出は行わない）。
 
 ## セットアップ
 
@@ -20,36 +25,40 @@ pip install -r requirements.txt
 python3 src/main.py
 ```
 
-リポジトリルートから実行する（`input/`・`output/` は実行時のカレントディレクトリ基準の相対パス）。
-`input/table.json`（全テーブルの一覧）と `input/<起点クエリ名>/converted_queries.json`（AI変換済みのクエリ一覧）
-を読み込み、起点クエリごとに `output/<起点クエリ名>/` へ結果を生成する。
+リポジトリルートから実行する（`chain_queries/`・`table.json`・`output/` は実行時の
+カレントディレクトリ基準の相対パス）。
+`table.json`（全テーブルの一覧）と `chain_queries/<起点クエリ名>/`（VBA出力の `chain_queries.json`、
+AI変換済みなら `converted_queries.json`）を読み込み、起点クエリごとに `output/<起点クエリ名>/` へ結果を生成する。
 
-起点クエリは `input/` 直下のサブフォルダのうち、`converted_queries.json` が存在するものから **自動検出** される。
-設定ファイルは不要。
+起点クエリは `chain_queries/` 直下の全サブフォルダから **自動検出** される。設定ファイルは不要。
 
 ---
 
-## `input/` のインターフェース仕様
+## `chain_queries/` / `table.json` のインターフェース仕様
 
 ```
-input/
-├── table.json                           # 全テーブルのフラットな一覧（VBAが出力）
+table.json                                  # 全テーブルのフラットな一覧（VBAが出力、リポジトリルート直下）
+chain_queries/
 ├── クエリ工事委託分析/
-│   └── converted_queries.json          # AI変換済みSQL（必須）
+│   ├── chain_queries.json                 # VBA出力（多階層フル展開済み、Access SQL）
+│   └── converted_queries.json             # AI変換／SSMA変換済みSQL（あれば優先使用、オプション）
 └── クエリ入札委託集計分析/
-    └── converted_queries.json          # AI変換済みSQL（必須）
+    └── chain_queries.json                 # AI変換がまだの場合はこれだけでも解析対象になる
 ```
 
-**起点クエリは自動検出される**：`input/` 直下のサブフォルダのうち、
-`converted_queries.json` が存在するサブフォルダ名が起点クエリとして自動的に認識される。
-設定ファイル（`start_queries.json` など）は不要。
+**起点クエリは自動検出される**：`chain_queries/` 直下の全サブフォルダのうち、
+`chain_queries.json` または `converted_queries.json` が存在するサブフォルダ名が
+起点クエリとして自動的に認識される。`chain_queries.json` のみ（AI変換がまだのクエリ）の
+フォルダも解析対象に含まれる。設定ファイル（`start_queries.json` など）は不要。
 
 ### 運用フロー
 
-1. **VBA実行**: Access クエリを検出・チェーン検出 → `chain_queries.json` 出力
-2. **AI変換**: `chain_queries.json` をAI変換サービスで SQL Server SQL に変換
-3. **配置**: 変換結果を `input/<起点クエリ名>/converted_queries.json` に配置
+1. **VBA実行**: 全クエリそれぞれを起点として、多階層の依存チェーンを重複除外なしにフル展開
+   → `chain_queries/<起点クエリ名>/chain_queries.json` 出力
+2. **AI変換**（任意）: `chain_queries.json` をAI変換サービスで SQL Server SQL に変換
+3. **配置**: 変換結果を `chain_queries/<起点クエリ名>/converted_queries.json` に配置
 4. **実行**: `python3 src/main.py` → 自動検出・リネージ解析 → 結果出力
+   （`converted_queries.json` があればそちらを優先、なければ `chain_queries.json` を使用）
 
 ### AI変換プロンプト
 
@@ -129,7 +138,7 @@ JOIN構造の欠落防止と、SQL内コメント埋め込みによる列消失�
 ]
 
 出力したJSONは `converted_queries.json` として保存し、
-`input/<起点クエリ名>/converted_queries.json` に配置してください。
+`chain_queries/<起点クエリ名>/converted_queries.json` に配置してください。
 ```
 
 ### `converted_queries.json`（AI変換済みSQLのフラット一覧）
@@ -157,7 +166,9 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 
 ### `table.json`（テーブル情報・全件フラット）
 
-物理テーブルのカラム定義一覧。`src/loader.py` の `load_schema()` が `sqlglot.lineage()` に渡すスキーマ辞書に変換する。
+物理テーブルのカラム定義一覧。`src/loader.py` の `load_schema()` が `sqlglot.lineage()` に渡す
+スキーマ辞書に変換し、`load_table_info()` が「物理テーブル名」組み立てに使う`物理名`・`スキーマ`を
+（`スキーマ取得方法`とあわせて）読み込む。
 
 ```json
 [
@@ -166,6 +177,8 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
     "種別": "ローカルテーブル",
     "接続先": "",
     "物理名": "工事台帳",
+    "スキーマ": "PO",
+    "スキーマ取得方法": "ODBCリンクテーブル定義から自動取得",
     "カラム": [
       { "名前": "工事ID",   "型": "int" },
       { "名前": "工事名称", "型": "varchar" }
@@ -188,10 +201,16 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 | `テーブル名` | string | Accessクエリ上で参照される論理名。`lineage()` のスキーマ辞書のキーになる。 |
 | `種別` | string | 「ローカルテーブル」／「リンクテーブル」等。メタデータとして保持。 |
 | `接続先` | string | リンクテーブルの接続先ファイルパス等。メタデータとして保持。 |
-| `物理名` | string | 接続先における実際のオブジェクト名。メタデータとして保持。 |
+| `物理名` | string | 接続先における実際のオブジェクト名。「参照物理テーブル名」列（後述）の組み立てに使用する。 |
+| `スキーマ` | string（省略可） | 物理テーブルのスキーマ名。省略時は空文字扱いとなり、物理テーブル名は`物理名`のみになる。 |
+| `スキーマ取得方法` | string（省略可） | スキーマ名の取得方法（例：ODBCリンクテーブル定義から自動取得）。メタデータとして保持。 |
 | `カラム` | array | そのテーブルが持つカラムの配列。 |
 | `カラム[].名前` | string | カラム名。 |
 | `カラム[].型` | string（省略可） | カラムの型。省略時は `"text"` として扱われる。 |
+
+**物理テーブル名の組み立て**（`src/loader.py` の `build_physical_table_name()`）：
+`スキーマ`が存在する場合は `スキーマ.物理名`（例：`PO.工事台帳`）、存在しない場合は `物理名` のみ。
+「テーブル参照マトリクス」シートの「参照物理テーブル名」列（後述）はこの形式で表示される。
 
 ---
 
@@ -205,20 +224,20 @@ sqlglot が正確に解析できるため、リネージ解決が正確になる
 
 #### シート「テーブル参照マトリクス」
 
-クエリ階層×テーブル名のワイド形式。行は起点クエリから呼び出し可能な各クエリ（登録済みクエリのみ。ローカルな無名サブクエリは含まない）で、同じクエリが複数の親から呼び出されている場合は呼び出し元ごとに別行になる。
+クエリ階層×参照物理テーブル名のワイド形式。行は起点クエリから呼び出し可能な各クエリ（登録済みクエリのみ。ローカルな無名サブクエリは含まない）で、同じクエリが複数の親から呼び出されている場合は呼び出し元ごとに別行になる。
 
 | 列名 | 内容 |
 |---|---|
 | 開始クエリ, サブクエリ1, サブクエリ2, ... | その行のクエリの、起点クエリからのパンくず（外側→内側）。列数はそのフォルダ内の最大ネスト数に応じて動的に決まる。自分自身の名前は自分の深さの列に入り、それより内側の列は空欄。 |
-| （テーブル名の列） | `table.json` の全テーブルをその登場順のまま列にする。既存のテーブル設計書と列位置を揃えられるようにするため、そのフォルダで参照されないテーブルの列も残す。 |
+| 参照物理テーブル名 | その行のクエリが参照している物理テーブル名を、直接参照（○）・間接参照（◎）を区別してカンマ区切りでまとめたもの（例：`節(○), 工事台帳基本(◎)`）。物理テーブル名は`table.json`の`スキーマ`・`物理名`から組み立てた形式（`build_physical_table_name()`、前述）。 |
 
-セルの意味：
+「参照物理テーブル名」列内の`(○)`/`(◎)`の意味：
 
-- `○`：その行のクエリが、自分自身のSQL（FROM/JOIN/WHERE/GROUP BY/HAVING/ORDER BYのいずれでも）で直接参照している物理テーブル
-- `◎`：その行のクエリ自身は直接参照していないが、呼び出しているサブクエリ（の、さらに下位のサブクエリ…）を辿ると参照しているテーブル。開始クエリ、および間に挟まる上位のサブクエリすべてに付く
-- 空欄：どちらでもない
+- `(○)`：その行のクエリが、自分自身のSQL（FROM/JOIN/WHERE/GROUP BY/HAVING/ORDER BYのいずれでも）で直接参照している物理テーブル
+- `(◎)`：その行のクエリ自身は直接参照していないが、呼び出しているサブクエリ（の、さらに下位のサブクエリ…）を辿ると参照しているテーブル。開始クエリ、および間に挟まる上位のサブクエリすべてに付く
+- どちらでもない物理テーブルは列挙されない（該当が1件もなければ「参照物理テーブル名」は空欄）
 
-○/◎ はPython側（`table_usage.py` / `matrix.py`）で確定させた値であり、Excelの数式では計算し直さない（後述）。
+○/◎の判定自体はPython側（`table_usage.py` / `matrix.py`）で確定させた値であり、Excelの数式では計算し直さない（後述）。
 
 #### シート「カラム単位リネージ」
 
@@ -307,7 +326,7 @@ AI変換の精度には波があるため、`main.py`本体のリネージ解析
 python3 src/validate.py
 ```
 
-`main.py`と同様に `input/` 直下を自動検出して、起点クエリごとに `output/<起点クエリ名>/validation.json` を出力する。
+`main.py`と同様に `chain_queries/` 直下を自動検出して、起点クエリごとに `output/<起点クエリ名>/validation.json` を出力する。
 NGが1件でもあれば終了コード1で終了する（CI等での自動チェックにそのまま使える）。
 
 ### 検知内容
@@ -344,15 +363,15 @@ DBに接続して実際に実行するわけではないため、あくまで**s
 
 ```
 src/
-├── main.py             # エントリポイント：起点クエリの発見、チェーン検出（detect_chain）、ログ組み立て
+├── main.py             # エントリポイント：起点クエリの発見、ログ組み立て
 ├── validate.py           # main.pyとは別の事前検証コマンド（構文・スキーマチェック）
-├── config.py            # パス関連の定数、起点クエリ（start_queries.json）の発見
-├── loader.py             # input/*.json（フラットな全クエリ・全テーブル）の読み込み
+├── config.py            # パス関連の定数、起点クエリ（chain_queries/配下のフォルダ）の発見
+├── loader.py             # chain_queries/*.json（クエリ）・table.json（全テーブル・物理テーブル名）の読み込み
 ├── casing.py             # qualify()通過後に失われる識別子の大文字小文字をschema/queriesの表記へ復元するヘルパー
 ├── sql_expand.py         # クエリ参照のインライン展開＋qualify検証（main.pyとvalidate.pyで共通利用）
 ├── lineage_extract.py    # lineage() を辿り、SELECT出力カラム単位のフラット行を組み立てる
 ├── table_usage.py        # クエリ単位の直接/間接の物理テーブル参照を、to_node()とは別経路（find_all(exp.Table)）で求める
-├── matrix.py             # クエリ呼び出し木を辿り、クエリ階層×テーブル名のワイド形式マトリックス（○/◎）を組み立てる
+├── matrix.py             # クエリ呼び出し木を辿り、クエリ階層×参照物理テーブル名のマトリックス（○/◎）を組み立てる
 └── report.py             # DataFrame化とファイル出力（Excel / JSON）
 ```
 
@@ -360,7 +379,7 @@ src/
 各モジュールはスクリプトと同じディレクトリにある兄弟モジュールとして素朴に import している
 （Pythonが実行スクリプトのディレクトリを自動的に `sys.path` に加えるため、パッケージ化は不要）。
 
-`input/start_queries.json` が存在しないか、起点クエリが1件も定義されていない場合、`main()` は
+`chain_queries/` 直下に起点クエリのフォルダが1件も見つからない場合、`main()` は
 エラーメッセージを表示して終了コード1で終了する。
 
 ## ディレクトリ構成
@@ -377,11 +396,11 @@ src/
 │   ├── table_usage.py
 │   ├── matrix.py
 │   └── report.py
-├── input/
-│   ├── query_dependencies.json
-│   ├── table.json
-│   ├── start_queries.json           # 起点クエリ名の配列
-│   └── <起点クエリ名>/              # 任意。converted_queries.json を置く場合だけ作成する
+├── table.json                        # 全テーブルのフラットな一覧（VBAが出力）
+├── chain_queries/
+│   └── <起点クエリ名>/
+│       ├── chain_queries.json       # VBA出力（多階層フル展開済み、Access SQL）
+│       └── converted_queries.json   # AI変換／SSMA変換済みSQL（あれば優先使用、オプション）
 ├── output/                          # 生成される成果物（git管理外）
 │   └── <起点クエリ名>/
 │       ├── lineage.xlsx

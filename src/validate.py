@@ -17,8 +17,8 @@ import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.errors import ErrorLevel, ParseError
 
-from config import DIALECT, INPUT_DIR, OUTPUT_DIR, TABLES_FILE, discover_start_queries
-from loader import load_queries, load_schema
+from config import CHAIN_QUERIES_DIR, DIALECT, OUTPUT_DIR, TABLES_FILE, discover_start_queries
+from loader import load_queries_for_query_dir, load_schema
 from report import write_json
 from sql_expand import expand_query_ast, qualify_expanded
 
@@ -56,8 +56,10 @@ def validate_query(query_name: str, sql: str, queries: dict[str, str], schema: d
 
 
 def validate_group(start_query: str, schema: dict) -> list[dict]:
-    converted_path = INPUT_DIR / start_query / "converted_queries.json"
-    queries = load_queries(converted_path)
+    result = load_queries_for_query_dir(CHAIN_QUERIES_DIR / start_query)
+    if result is None:
+        return []
+    queries, _ = result
     return [validate_query(name, sql, queries, schema) for name, sql in queries.items()]
 
 
@@ -66,7 +68,7 @@ def main() -> None:
     start_queries = discover_start_queries()
 
     if not start_queries:
-        print(f"エラー: {INPUT_DIR} 下に converted_queries.json が見つかりません。")
+        print(f"エラー: {CHAIN_QUERIES_DIR} 下に起点クエリのフォルダが見つかりません。")
         sys.exit(1)
 
     total_ng = 0
